@@ -1,0 +1,20 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 灵机 Logo - 抽象菱形宝石，象征 AI 智慧 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,16 L78,44 L54,72 L30,44 Z"
+        android:strokeWidth="0" />
+    <!-- 内部高光切割 -->
+    <path
+        android:fillColor="#F0EDFF"
+        android:pathData="M54,24 L70,44 L54,64 L38,44 Z"
+        android:strokeWidth="0" />
+    <!-- 中心圆点 -->
+    <path
+        android:fillColor="#6C5CE7"
+        android:pathData="M47,37 L61,37 A7,7 0 1,1 47,37 Z" />
+</vector>

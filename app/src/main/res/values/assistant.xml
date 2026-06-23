@@ -1,0 +1,7 @@
+<resources>
+    <string-array name="ask_myagent_query_patterns">
+        <item>ask 灵机 $prompt</item>
+        <item>告诉灵机 $prompt</item>
+        <item>打开灵机 $prompt</item>
+    </string-array>
+</resources>
