@@ -1,4 +1,4 @@
-## OpenClaw Android App
+## MyAgent Android App
 
 Status: **extremely alpha**. The app is actively being rebuilt from the ground up.
 
