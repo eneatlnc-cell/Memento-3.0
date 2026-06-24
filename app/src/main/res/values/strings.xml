@@ -1,3 +1,23 @@
 <resources>
-    <string name="app_name">灵机 Agent</string>
+    <string name="app_name">灵机</string>
+    <string name="chat_hint">和灵机说点什么...</string>
+    <string name="chat_send">发送</string>
+    <string name="chat_empty">开始和灵机聊天吧！</string>
+    <string name="chat_abort">停止生成</string>
+    <string name="chat_error">发送失败，请重试</string>
+    <string name="persona_title">选择人格</string>
+    <string name="persona_funny">逗比型</string>
+    <string name="persona_warm">暖心型</string>
+    <string name="persona_cool">高冷型</string>
+    <string name="persona_scholar">学霸型</string>
+    <string name="settings_title">设置</string>
+    <string name="settings_persona">AI 人格</string>
+    <string name="settings_appearance">外观</string>
+    <string name="settings_about">关于灵机</string>
+    <string name="onboarding_welcome">欢迎来到灵机</string>
+    <string name="onboarding_subtitle">你的 AI 搭子，永远在线</string>
+    <string name="onboarding_start">开始使用</string>
+    <string name="tab_chat">聊天</string>
+    <string name="tab_settings">设置</string>
+    <string name="loading">加载中...</string>
 </resources>

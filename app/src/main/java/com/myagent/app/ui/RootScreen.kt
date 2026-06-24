@@ -7,7 +7,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 
-/** Chooses onboarding or the authenticated app shell from persisted app state. */
+/**
+ * 根路由 — 根据 onboarding 状态决定显示欢迎页还是主界面。
+ */
 @Composable
 fun RootScreen(viewModel: MainViewModel) {
   val onboardingCompleted by viewModel.onboardingCompleted.collectAsState()
