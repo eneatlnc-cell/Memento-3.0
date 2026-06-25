@@ -3,7 +3,9 @@ package com.myagent.app.model
 import android.util.Log
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * 本地模型加载器 — 优先使用 llama.cpp 真实推理，模型不可用时降级为 Mock。
@@ -64,12 +66,32 @@ class LocalModelLoader(
 
   /**
    * 流式生成回复。
-   * - 模型就绪 → llama.cpp 真实推理
+   * - 模型就绪 → llama.cpp 真实推理（带 15 秒超时，超时自动降级 Mock）
    * - 模型不可用 → Mock 降级
    */
   fun generate(prompt: String): Flow<String> {
     if (initialized && modelPath != null) {
-      return engine.generate(prompt)
+      return flow {
+        // 先尝试真实推理，15 秒内没产出就降级 Mock
+        val result = withTimeoutOrNull(15_000L) {
+          val sb = StringBuilder()
+          engine.generate(prompt).collect { chunk ->
+            sb.append(chunk)
+            emit(chunk)
+          }
+          sb.toString()
+        }
+        if (result == null) {
+          // 超时了，降级 Mock
+          Log.w(TAG, "Model inference timed out, falling back to Mock")
+          initialized = false
+          mockGenerate(prompt).collect { emit(it) }
+        }
+      }.catch { e ->
+        Log.e(TAG, "Model inference error: ${e.message}, falling back to Mock")
+        initialized = false
+        mockGenerate(prompt).collect { emit(it) }
+      }
     }
     return mockGenerate(prompt)
   }
