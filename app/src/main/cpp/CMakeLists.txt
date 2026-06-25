@@ -32,6 +32,9 @@ set(LLAMA_SRC ${CMAKE_CURRENT_LIST_DIR}/llama.cpp)
 include_directories(BEFORE ${LLAMA_SRC}/vendor/json/single_include)
 include_directories(BEFORE ${LLAMA_SRC}/vendor/json/include)
 
+# 禁用 cpp-httplib 的 zstd 压缩（Android NDK 不提供 zstd）
+set(HTTPLIB_USE_ZSTD_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
+
 add_subdirectory(${LLAMA_SRC} build-llama)
 
 # ── Lingji JNI library ──
