@@ -87,6 +87,8 @@ static common_sampler * new_sampler(float temp) {
     sparams.temp = temp;
     sparams.top_k = 40;
     sparams.top_p = 0.95f;
+    sparams.penalty_repeat = 64;   // 重复惩罚：防止模型循环输出同一 token
+    sparams.penalty_freq  = 0.5f;  // 频率惩罚：降低高频 token 概率
     return common_sampler_init(g_model, sparams);
 }
 

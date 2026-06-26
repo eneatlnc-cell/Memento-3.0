@@ -113,8 +113,11 @@ class ChatController(
           if (it.id == assistantId) it.copy(content = finalContent) else it
         }
 
-        // 6. 保存助手回复到记忆
-        memoryManager.saveMemory(role = "assistant", content = finalContent)
+        // 6. 保存助手回复到记忆（过滤掉循环输出）
+        val cleaned = finalContent.trim()
+        if (cleaned.isNotEmpty() && !isLoopOutput(cleaned)) {
+          memoryManager.saveMemory(role = "assistant", content = cleaned)
+        }
 
         _streamingText.value = null
         _isLoading.value = false
@@ -146,5 +149,18 @@ class ChatController(
     _streamingText.value = null
     _isLoading.value = false
     _errorText.value = null
+  }
+
+  /**
+   * 检测是否为循环输出（如 "灵机: 灵机: 灵机:"）
+   */
+  private fun isLoopOutput(text: String): Boolean {
+    if (text.length < 3) return false
+    // 按空格/换行分割
+    val tokens = text.split(Regex("\\s+")).filter { it.isNotBlank() }
+    if (tokens.size < 3) return false
+    // 检查是否有超过一半的 token 相同
+    val maxCount = tokens.groupingBy { it }.eachCount().values.maxOrNull() ?: 0
+    return maxCount > tokens.size / 2
   }
 }
