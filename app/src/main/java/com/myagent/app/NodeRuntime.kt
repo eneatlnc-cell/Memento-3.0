@@ -21,7 +21,7 @@ import kotlinx.coroutines.launch
 /**
  * 灵机 v2.0 运行时 — 管理 UI 状态、聊天控制器、模型加载器、下载状态。
  *
- * 不再依赖 Gateway，所有推理在本地完成。
+ * v2.0：LiteRT-LM 替代 llama.cpp，纯 Kotlin 推理，无需 nativeLibDir。
  */
 class NodeRuntime(
   private val app: NodeApp,
@@ -38,18 +38,11 @@ class NodeRuntime(
   val modelLoader: LocalModelLoader = run {
     val modelFile = modelInstaller.getModelPath()
     val path = if (modelInstaller.isModelReady()) modelFile.absolutePath else null
-    LocalModelLoader(path).also {
-      // 如果模型已就绪，立即初始化 llama.cpp 后端
+    LocalModelLoader(app, path).also {
       if (path != null) {
-        initModelEngine(it)
+        it.init()
       }
     }
-  }
-
-  /** 初始化 llama.cpp 推理引擎 */
-  private fun initModelEngine(loader: LocalModelLoader) {
-    val nativeLibDir = app.applicationInfo.nativeLibDir
-    loader.init(nativeLibDir)
   }
 
   // 聊天控制器
@@ -79,11 +72,10 @@ class NodeRuntime(
     downloadJob = scope.launch {
       modelInstaller.downloadModel().collect { state ->
         _downloadState.value = state
-        // 下载完成后，初始化 llama.cpp 引擎
+        // 下载完成后，初始化 LiteRT-LM 引擎
         if (state is ModelDownloadState.Completed && modelInstaller.isModelReady()) {
           val modelPath = modelInstaller.getModelPath().absolutePath
-          val nativeLibDir = app.applicationInfo.nativeLibDir
-          modelLoader.reload(modelPath, nativeLibDir)
+          modelLoader.reload(modelPath)
         }
       }
     }

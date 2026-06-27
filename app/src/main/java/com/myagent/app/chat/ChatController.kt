@@ -21,6 +21,8 @@ import java.util.UUID
  *          → LocalModelLoader.generate() [流式]
  *          → UI 逐字显示
  *          → MemoryManager.saveMemory()
+ *
+ * v2.0：LocalModelLoader 底层使用 LiteRT-LM 引擎，纯 Kotlin 实现。
  */
 class ChatController(
   private val scope: CoroutineScope,

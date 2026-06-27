@@ -1,5 +1,6 @@
 package com.myagent.app.model
 
+import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -13,50 +14,49 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * 本地模型加载器 — 优先使用 llama.cpp 真实推理，模型不可用时降级为 Mock。
+ * 本地模型加载器 — 优先使用 LiteRT-LM 真实推理，模型不可用时降级为 Mock。
+ *
+ * v2.0：LiteRT-LM 替代 llama.cpp，纯 Kotlin 实现，无需 JNI/NDK。
  */
 class LocalModelLoader(
+  private val context: Context,
   private var modelPath: String?,
 ) {
   companion object {
     private const val TAG = "LocalModelLoader"
-    private const val INFERENCE_TIMEOUT_MS = 30_000L
+    private const val INFERENCE_TIMEOUT_MS = 120_000L // LiteRT-LM 首次推理较慢，放宽到 120s
   }
 
-  private val engine = LlamaEngine()
+  private val engine = LiteRtEngine(context)
   @Volatile private var initialized = false
 
-  fun init(nativeLibDir: String) {
+  /**
+   * 初始化引擎。如果 modelPath 为 null 则跳过（降级 Mock）。
+   */
+  fun init() {
     if (modelPath == null) {
       Log.i(TAG, "No model available, using Mock mode")
       return
     }
-    doInitialize(modelPath!!, nativeLibDir)
+    doInitialize(modelPath!!)
   }
 
-  fun reload(newModelPath: String, nativeLibDir: String) {
+  /**
+   * 下载完成后重新加载模型。
+   */
+  fun reload(newModelPath: String) {
     modelPath = newModelPath
-    doInitialize(newModelPath, nativeLibDir)
+    doInitialize(newModelPath)
   }
 
-  private fun doInitialize(path: String, nativeLibDir: String) {
+  private fun doInitialize(path: String) {
     try {
-      engine.init(nativeLibDir)
-      if (!engine.loadModel(path)) {
-        Log.e(TAG, "Model load failed, falling back to Mock")
-        return
-      }
-      if (!engine.prepare()) {
-        Log.e(TAG, "Context prepare failed, falling back to Mock")
-        return
-      }
-      // 快速自检：做一次 tokenize → decode → sample 验证管线正常
-      if (!engine.ping()) {
-        Log.e(TAG, "Inference ping failed, falling back to Mock")
+      if (!engine.init(path)) {
+        Log.e(TAG, "Engine init failed, falling back to Mock")
         return
       }
       initialized = true
-      Log.i(TAG, "llama.cpp engine ready: $path")
+      Log.i(TAG, "LiteRT-LM engine ready: $path")
     } catch (e: Exception) {
       Log.e(TAG, "Engine init failed: ${e.message}, falling back to Mock")
       initialized = false
@@ -66,7 +66,7 @@ class LocalModelLoader(
   /**
    * 流式生成回复。
    *
-   * 使用 callbackFlow 将 JNI 阻塞调用放到独立线程，
+   * 使用 callbackFlow 将 LiteRT-LM 回调桥接到 Flow，
    * 用 withTimeoutOrNull 在超时后停止收集（不阻塞 UI）。
    */
   fun generate(prompt: String): Flow<String> {
@@ -94,7 +94,6 @@ class LocalModelLoader(
       }
 
       if (finished != true) {
-        // 超时了 — 停止等待，JNI 线程会被 abandon
         inferenceScope.cancel()
         Log.e(TAG, "Inference timed out after ${INFERENCE_TIMEOUT_MS}ms")
         trySend("抱歉，模型推理超时了。可能是手机内存不足，请尝试：\n1. 重启 App\n2. 在设置中切换到 Mock 模式")
@@ -110,7 +109,7 @@ class LocalModelLoader(
 
   fun unload() {
     if (initialized) {
-      engine.unload()
+      engine.close()
       initialized = false
     }
   }

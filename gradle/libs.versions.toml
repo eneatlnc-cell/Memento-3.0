@@ -13,6 +13,8 @@ junit-vintage = "6.1.0"
 kotest = "6.1.11"
 ktlint-gradle = "14.2.0"
 kotlin = "2.4.0"
+litertlm = "0.9.0"
+onnxruntime = "1.21.0"
 material = "1.14.0"
 room = "2.7.1"
 serialization-json = "1.11.0"
@@ -39,8 +41,11 @@ junit-vintage-engine = { module = "org.junit.vintage:junit-vintage-engine", vers
 kotest-assertions-core = { module = "io.kotest:kotest-assertions-core-jvm", version.ref = "kotest" }
 kotest-runner-junit5 = { module = "io.kotest:kotest-runner-junit5-jvm", version.ref = "kotest" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-coroutines-guava = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-guava", version.ref = "coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization-json" }
+litertlm-android = { module = "com.google.ai.edge.litertlm:litertlm-android", version.ref = "litertlm" }
+onnxruntime-android = { module = "com.microsoft.onnxruntime:onnxruntime-android", version.ref = "onnxruntime" }
 material = { module = "com.google.android.material:material", version.ref = "material" }
 room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
 room-ktx = { module = "androidx.room:room-ktx", version.ref = "room" }

@@ -14,29 +14,37 @@ import java.net.URL
 import java.security.MessageDigest
 
 /**
- * 模型安装器 — 从 OSS CDN 下载 GGUF 模型到内部存储，支持断点续传和 SHA256 校验。
+ * 模型安装器 — 从 ModelScope（魔搭社区）下载 .litertlm 模型到内部存储，支持断点续传和 SHA256 校验。
+ *
+ * v2.0：Gemma 4 E4B-it 模型（~3.66 GB），.litertlm 格式，LiteRT-LM 引擎。
  *
  * 策略：
- * - 优先从阿里云 OSS CDN 下载（国内高速）
+ * - 从 ModelScope 下载（国内高速）
  * - 支持 HTTP Range 断点续传
  * - 下载完成后 SHA256 校验
  * - 模型不存在或校验失败时自动降级为 Mock
  */
 class ModelInstaller(private val context: Context) {
   companion object {
-    const val MODEL_FILE_NAME = "gemma3-270m-it-q4_k_m.gguf"
+    // Gemma 4 E4B-it，LiteRT-LM 格式
+    const val MODEL_FILE_NAME = "gemma-4-E4B-it.litertlm"
 
-    /** 阿里云 OSS CDN 下载地址 */
+    /**
+     * ModelScope LFS CDN 直链。
+     * 模型仓库：litert-community/gemma-4-E4B-it-litert-lm
+     *
+     * 注意：auth_key 有效期为 7 天，过期后需重新生成。
+     */
     private const val DOWNLOAD_URL =
-      "https://ljsour.oss-cn-beijing.aliyuncs.com/$MODEL_FILE_NAME"
+      "https://cdn-lfs-cn-1.modelscope.cn/prod/lfs-objects/0b/2a/8980ce155fd97673d8e820b4d29d9c7d99b8fa6806f425d969b145bd52e0?filename=gemma-4-E4B-it.litertlm&namespace=litert-community&repository=gemma-4-E4B-it-litert-lm&revision=master&tag=model&auth_key=1782513856-e443c9e495cf420b8cff68e2aac38e46-0-bbdb6cf30390dd36cee6f271b533df7c"
 
-    /** 期望的 SHA256（大写，无空格） */
+    /** SHA256 校验值 */
     private const val EXPECTED_SHA256 =
-      "57BBCE8F2095939BDE118BAFBB65279C6E36EE8BCB09EE258F7F5D6A7B8E7F39"
+      "0B2A8980CE155FD97673D8E820B4D29D9C7D99B8FA6806F425D969B145BD52E0"
 
     private const val BUFFER_SIZE = 8192
     private const val CONNECT_TIMEOUT_MS = 15_000
-    private const val READ_TIMEOUT_MS = 30_000
+    private const val READ_TIMEOUT_MS = 60_000 // 大文件下载需要更长的超时
   }
 
   /**
@@ -45,7 +53,7 @@ class ModelInstaller(private val context: Context) {
   fun getModelPath(): File = File(context.filesDir, "models/$MODEL_FILE_NAME")
 
   /**
-   * 检查模型是否已安装且校验通过
+   * 检查模型是否已安装且 SHA256 校验通过。
    */
   fun isModelReady(): Boolean {
     val file = getModelPath()
@@ -58,7 +66,7 @@ class ModelInstaller(private val context: Context) {
    * 流程：
    * 1. 已存在 + 校验通过 → 直接 Completed
    * 2. 发起 HTTP 下载（Range 续传）
-   * 3. SHA256 校验
+   * 3. SHA256 校验（如果已配置）
    * 4. 失败则清理并返回 Failed
    */
   fun downloadModel(): Flow<ModelDownloadState> = flow {
@@ -68,7 +76,7 @@ class ModelInstaller(private val context: Context) {
     modelFile.parentFile?.mkdirs()
 
     // 已存在且校验通过
-    if (modelFile.exists() && modelFile.length() > 0 && verifyChecksum(modelFile)) {
+    if (modelFile.exists() && modelFile.length() > 0 && isModelReady()) {
       emit(ModelDownloadState.Completed)
       return@flow
     }
@@ -97,7 +105,7 @@ class ModelInstaller(private val context: Context) {
 
       // —— 第 3 步：校验 ——
       emit(ModelDownloadState.Verifying)
-      if (!verifyChecksum(modelFile)) {
+      if (!isModelReady()) {
         modelFile.delete()
         emit(ModelDownloadState.Failed("模型文件校验失败，请重试"))
         return@flow
