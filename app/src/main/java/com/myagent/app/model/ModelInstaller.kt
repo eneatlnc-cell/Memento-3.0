@@ -15,29 +15,22 @@ import java.net.URL
 import java.security.MessageDigest
 
 /**
- * 模型安装器 — 从 ModelScope（魔搭社区）下载 .litertlm 模型到内部存储，支持断点续传和 SHA256 校验。
+ * 模型安装器 — 从阿里云 OSS 下载 .litertlm 模型到内部存储，支持断点续传和 SHA256 校验。
  *
- * v2.0：Gemma 4 E4B-it 模型（~3.66 GB），.litertlm 格式，LiteRT-LM 引擎。
+ * v2.0：端侧推理模型（~3.66 GB），.litertlm 格式，LiteRT-LM 引擎。
  *
  * 策略：
- * - 从 ModelScope 下载（国内高速）
+ * - 从阿里云 OSS 下载（国内高速，稳定可靠）
  * - 支持 HTTP Range 断点续传
  * - 下载完成后 SHA256 校验
  * - 模型不存在或校验失败时自动降级为 Mock
  */
 class ModelInstaller(private val context: Context) {
   companion object {
-    // Gemma 4 E4B-it，LiteRT-LM 格式
-    const val MODEL_FILE_NAME = "gemma-4-E4B-it.litertlm"
+    const val MODEL_FILE_NAME = "mynagent-v1-it.litertlm"
 
-    /**
-     * ModelScope LFS CDN 直链。
-     * 模型仓库：litert-community/gemma-4-E4B-it-litert-lm
-     *
-     * 注意：auth_key 有效期为 7 天，过期后需重新生成。
-     */
     private const val DOWNLOAD_URL =
-      "https://cdn-lfs-cn-1.modelscope.cn/prod/lfs-objects/0b/2a/8980ce155fd97673d8e820b4d29d9c7d99b8fa6806f425d969b145bd52e0?filename=gemma-4-E4B-it.litertlm&namespace=litert-community&repository=gemma-4-E4B-it-litert-lm&revision=master&tag=model&auth_key=1782513856-e443c9e495cf420b8cff68e2aac38e46-0-bbdb6cf30390dd36cee6f271b533df7c"
+      "https://ljsour.oss-cn-beijing.aliyuncs.com/myaengt-v1-it.litertlm"
 
     /** SHA256 校验值 */
     private const val EXPECTED_SHA256 =
