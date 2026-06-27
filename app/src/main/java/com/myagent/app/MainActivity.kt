@@ -7,6 +7,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -15,12 +18,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.core.view.WindowCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
  * 灵机 v2.0 主 Activity — 单一 Activity 架构，使用 Jetpack Compose。
+ *
+ * 启动流程：品牌像素 splash（1s 淡入淡出） → 主界面。
  */
 class MainActivity : ComponentActivity() {
   private val viewModel: MainViewModel by viewModels()
@@ -32,6 +39,7 @@ class MainActivity : ComponentActivity() {
     WindowCompat.setDecorFitsSystemWindows(window, false)
 
     setContent {
+      var showSplash by remember { mutableStateOf(true) }
       var activeViewModel by remember { mutableStateOf<MainViewModel?>(null) }
 
       LaunchedEffect(Unit) {
@@ -44,15 +52,24 @@ class MainActivity : ComponentActivity() {
         activeViewModel = readyViewModel
       }
 
-      val currentViewModel = activeViewModel
-      if (currentViewModel == null) {
-        OpenClawTheme {
-          StartupSurface()
-        }
+      if (showSplash) {
+        LingjiSplashScreen(
+          onSplashComplete = { showSplash = false }
+        )
       } else {
-        val appearanceThemeMode by currentViewModel.appearanceThemeMode.collectAsState()
-        OpenClawTheme(themeMode = appearanceThemeMode) {
-          RootScreen(viewModel = currentViewModel)
+        val currentViewModel = activeViewModel
+        if (currentViewModel == null) {
+          // 极端情况：ViewModel 还没初始化完，显示纯黑背景
+          Box(
+            modifier = Modifier
+              .fillMaxSize()
+              .background(Color.Black)
+          )
+        } else {
+          val appearanceThemeMode by currentViewModel.appearanceThemeMode.collectAsState()
+          OpenClawTheme(themeMode = appearanceThemeMode) {
+            RootScreen(viewModel = currentViewModel)
+          }
         }
       }
     }
@@ -75,9 +92,4 @@ class MainActivity : ComponentActivity() {
     initializedViewModel = readyViewModel
     readyViewModel.setForeground(foreground)
   }
-}
-
-@Composable
-private fun StartupSurface() {
-  LingjiSplashScreen()
 }
