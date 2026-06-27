@@ -3,9 +3,9 @@ package com.myagent.app.ui
 import com.myagent.app.MainViewModel
 import com.myagent.app.model.PersonaType
 import com.myagent.app.ui.chat.ChatScreen
+import com.myagent.app.ui.design.ClawBottomNav
 import com.myagent.app.ui.design.ClawDesignTheme
 import com.myagent.app.ui.design.ClawNavItem
-import com.myagent.app.ui.design.ClawScaffold
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -17,7 +17,6 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -34,36 +33,35 @@ fun ShellScreen(
   viewModel: MainViewModel,
   modifier: Modifier = Modifier,
 ) {
-  var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+  var selectedTab by rememberSaveable { mutableStateOf("chat") }
   var showPersonaSelection by remember { mutableStateOf(false) }
 
   val navItems = listOf(
-    ClawNavItem("聊天", Icons.Outlined.ChatBubbleOutline, 0),
-    ClawNavItem("设置", Icons.Outlined.Settings, 1),
+    ClawNavItem(key = "chat", label = "聊天", icon = Icons.Outlined.ChatBubbleOutline),
+    ClawNavItem(key = "settings", label = "设置", icon = Icons.Outlined.Settings),
   )
 
   ClawDesignTheme {
     Scaffold(
       modifier = modifier,
       bottomBar = {
-        // 人格选择界面隐藏底部导航栏
         if (!showPersonaSelection) {
-          ClawScaffold(
+          ClawBottomNav(
             items = navItems,
-            selectedIndex = selectedTab,
-            onItemSelected = { selectedTab = it },
+            selectedKey = selectedTab,
+            onSelect = { selectedTab = it },
           )
         }
       },
     ) { innerPadding ->
       when (selectedTab) {
-        0 -> ChatScreen(
+        "chat" -> ChatScreen(
           viewModel = viewModel,
           modifier = Modifier
             .fillMaxSize()
             .padding(innerPadding),
         )
-        1 -> SettingsScreen(
+        "settings" -> SettingsScreen(
           viewModel = viewModel,
           modifier = Modifier
             .fillMaxSize()
