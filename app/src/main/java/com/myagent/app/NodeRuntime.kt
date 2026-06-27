@@ -110,7 +110,8 @@ class NodeRuntime(
 
   // 人格
   val currentPersona: StateFlow<PersonaType> = personaManager.currentPersona
-  val personaSelected: StateFlow<Boolean> = MutableStateFlow(personaManager.isPersonaSelected).asStateFlow()
+  private val _personaSelected = MutableStateFlow(personaManager.isPersonaSelected)
+  val personaSelected: StateFlow<Boolean> = _personaSelected.asStateFlow()
 
   // 外观
   val appearanceThemeMode: StateFlow<AppearanceThemeMode> = prefs.appearanceThemeMode
@@ -143,7 +144,7 @@ class NodeRuntime(
   fun lockPersona(type: PersonaType): Boolean {
     val result = personaManager.lockPersona(type)
     if (result) {
-      (personaSelected as MutableStateFlow).value = true
+      _personaSelected.value = true
     }
     return result
   }
