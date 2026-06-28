@@ -120,6 +120,7 @@ class KokoroTtsEngine(
       )
 
       val results = session.run(inputs)
+      @Suppress("UNCHECKED_CAST")
       val output = (results[0].value as Array<FloatArray>)[0]
 
       val pcm = output.copyOf()

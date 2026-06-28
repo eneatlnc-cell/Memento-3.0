@@ -1,7 +1,7 @@
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.ktlint)
-  alias(libs.plugins.kotlin.android)
+  // kotlin-android 插件已弃用：AGP 9.2+ 内置 Kotlin Android 支持
   alias(libs.plugins.kotlin.compose)
   alias(libs.plugins.kotlin.serialization)
   alias(libs.plugins.kotlin.ksp)

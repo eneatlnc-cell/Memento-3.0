@@ -123,7 +123,7 @@ class HyperFramesRenderer(
         domStorageEnabled = true
         allowFileAccess = true
         blockNetworkLoads = true
-        setRenderPriority(android.webkit.WebSettings.RenderPriority.HIGH)
+        // setRenderPriority 已在 API 26 弃用、API 31 移除，minSdk=31 无需设置
       }
       webViewClient = WebViewClient()
     }

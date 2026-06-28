@@ -50,6 +50,7 @@ abstract class MemoryDatabase : RoomDatabase() {
       }
     }
 
+    @Suppress("RoomWarnings")
     private fun buildDatabase(appContext: Context): MemoryDatabase {
       val externalDir = appContext.getExternalFilesDir(null)
 
