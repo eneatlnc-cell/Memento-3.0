@@ -1,4 +1,4 @@
-# ── Lingji v2.0 ProGuard ──
+# ── Memento v2.0 ProGuard ──
 
 # Keep Room entities
 -keep class com.myagent.app.memory.** { *; }

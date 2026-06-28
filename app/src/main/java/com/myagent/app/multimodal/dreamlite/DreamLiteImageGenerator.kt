@@ -192,7 +192,7 @@ body {
   <div id="o1" class="ornament"></div>
   <div id="o2" class="ornament"></div>
   <h1 id="title">$title</h1>
-  <p id="subtitle">灵机 · MyAgent</p>
+  <p id="subtitle">Memento</p>
 </div>
 </body></html>
     """.trimIndent()
@@ -359,7 +359,7 @@ body {
       isAntiAlias = true
     }
     canvas.drawText(formatTitle(prompt), 256f, 250f, paint)
-    canvas.drawText("灵机 · 端侧渲染", 256f, 290f, paint)
+    canvas.drawText("Memento · 端侧渲染", 256f, 290f, paint)
     return bitmap
   }
 }

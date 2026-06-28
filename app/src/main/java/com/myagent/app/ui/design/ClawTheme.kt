@@ -138,7 +138,7 @@ private val LocalClawRadii = staticCompositionLocalOf { ClawRadii() }
 private val LocalClawTypography = staticCompositionLocalOf { clawTypography(mobileFontFamily) }
 
 /**
- * Composition-local access point for 灵机 Android 设计令牌.
+ * Composition-local access point for Memento Android 设计令牌.
  */
 internal object ClawTheme {
   val colors: ClawColors
@@ -163,7 +163,7 @@ internal object ClawTheme {
 }
 
 /**
- * 安装灵机设计令牌 and maps them into MaterialTheme for Material3 controls.
+ * 安装 Memento 设计令牌 and maps them into MaterialTheme for Material3 controls.
  */
 @Composable
 internal fun ClawDesignTheme(

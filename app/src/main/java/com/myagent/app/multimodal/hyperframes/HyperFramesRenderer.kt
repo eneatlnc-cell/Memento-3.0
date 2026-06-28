@@ -219,7 +219,7 @@ body {
   <div id="a1" class="accent"></div>
   <div id="a2" class="accent"></div>
   <h1 id="title">$title</h1>
-  <p id="subtitle">灵机 · MyAgent</p>
+  <p id="subtitle">Memento</p>
 </div>
 <script>
 window.__timelines = [];

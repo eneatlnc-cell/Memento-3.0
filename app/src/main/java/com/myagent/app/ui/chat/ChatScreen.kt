@@ -108,7 +108,7 @@ fun ChatScreen(
             contentAlignment = Alignment.Center,
           ) {
             Text(
-              text = "开始和灵机聊天吧！\n支持文字、图片、语音",
+              text = "开始和 Memento 聊天吧！\n支持文字、图片、语音",
               color = MaterialTheme.colorScheme.onSurfaceVariant,
               fontSize = 16.sp,
             )
@@ -198,7 +198,7 @@ fun ChatScreen(
       OutlinedTextField(
         value = inputText,
         onValueChange = { inputText = it },
-        placeholder = { Text("和灵机说点什么...") },
+        placeholder = { Text("和 Memento 说点什么...") },
         modifier = Modifier.weight(1f),
         maxLines = 4,
         shape = RoundedCornerShape(24.dp),

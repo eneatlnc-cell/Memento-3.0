@@ -20,6 +20,8 @@ class ActivationManager(context: Context) {
       "LINGJI2024",
       "MYAGENT-V2",
       "LINGJI-PRO",
+      "MEMENTO2024",
+      "MEMENTO-V1",
     )
   }
 

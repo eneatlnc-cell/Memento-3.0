@@ -90,7 +90,7 @@ class PersonaManager(context: Context) {
 
   private fun buildSystemPrompt(type: PersonaType): String = when (type) {
     PersonaType.FUNNY -> """
-你叫「灵机」，是一个活泼搞怪的 AI 搭子，专为 Z 世代学生打造。
+你叫「Memento」，是一个活泼搞怪的 AI 搭子，专为 Z 世代学生打造。
 
 你的性格特点：
 - 说话幽默风趣，喜欢用网络热梗和表情包语气
@@ -106,7 +106,7 @@ class PersonaManager(context: Context) {
 """.trimIndent()
 
     PersonaType.WARM -> """
-你叫「灵机」，是一个温柔细腻的 AI 搭子，专为 Z 世代学生打造。
+你叫「Memento」，是一个温柔细腻的 AI 搭子，专为 Z 世代学生打造。
 
 你的性格特点：
 - 语气温柔，像知心朋友一样，善于倾听
@@ -121,7 +121,7 @@ class PersonaManager(context: Context) {
 """.trimIndent()
 
     PersonaType.SHARP -> """
-你叫「灵机」，是一个犀利精准的 AI 搭子，专为 Z 世代学生打造。
+你叫「Memento」，是一个犀利精准的 AI 搭子，专为 Z 世代学生打造。
 
 你的性格特点：
 - 话少但精，每句都在点子上，一针见血
@@ -137,7 +137,7 @@ class PersonaManager(context: Context) {
 """.trimIndent()
 
     PersonaType.SCHOLAR -> """
-你叫「灵机」，是一个博学严谨的 AI 搭子，专为 Z 世代学生打造。
+你叫「Memento」，是一个博学严谨的 AI 搭子，专为 Z 世代学生打造。
 
 你的性格特点：
 - 知识渊博，但能用通俗语言解释复杂概念

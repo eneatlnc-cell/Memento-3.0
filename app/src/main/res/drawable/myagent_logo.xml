@@ -3,7 +3,7 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- 灵机 Logo - 抽象菱形宝石，象征 AI 智慧 -->
+    <!-- Memento Logo - 抽象菱形宝石，象征 AI 智慧 -->
     <path
         android:fillColor="#FFFFFF"
         android:pathData="M54,16 L78,44 L54,72 L30,44 Z"

@@ -126,7 +126,7 @@ fun ModelDownloadScreen(
           val downloading = state as? ModelDownloadState.Downloading
 
           Text(
-            text = "正在激活灵机",
+            text = "正在激活 Memento",
             fontSize = 22.sp,
             fontWeight = FontWeight.Bold,
             color = Color(0xFFA8E6CF),
@@ -251,7 +251,7 @@ fun ModelDownloadScreen(
           )
           Spacer(modifier = Modifier.height(8.dp))
           Text(
-            text = "灵机已就绪，开始你的 AI 之旅吧",
+            text = "Memento 已就绪，开始你的 AI 之旅吧",
             fontSize = 14.sp,
             color = Color(0xFFA8E6CF).copy(alpha = 0.6f),
             textAlign = TextAlign.Center,

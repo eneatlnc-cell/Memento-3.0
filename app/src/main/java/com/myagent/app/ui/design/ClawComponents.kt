@@ -56,7 +56,7 @@ internal enum class ClawStatus {
   Danger,
 }
 
-/** Full-screen mobile scaffold that applies 灵机安全区域和画布令牌. */
+/** Full-screen mobile scaffold that applies Memento 安全区域和画布令牌. */
 @Composable
 internal fun ClawScaffold(
   modifier: Modifier = Modifier,
@@ -486,7 +486,7 @@ internal fun ClawComponentShowcase(modifier: Modifier = Modifier) {
   ClawScaffold(modifier = modifier) {
     Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
       ClawTopBar(
-        title = "灵机",
+        title = "Memento",
         subtitle = "Local command center",
         navigation = { ClawAvatarMark(text = "OC") },
         actions = {
@@ -500,7 +500,7 @@ internal fun ClawComponentShowcase(modifier: Modifier = Modifier) {
         horizontalArrangement = Arrangement.SpaceBetween,
       ) {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-          Text(text = "灵机", style = ClawTheme.type.display, color = ClawTheme.colors.text)
+          Text(text = "Memento", style = ClawTheme.type.display, color = ClawTheme.colors.text)
           Text(text = "Design system prototype", style = ClawTheme.type.body, color = ClawTheme.colors.textMuted)
         }
         ClawStatusPill(text = "Connected", status = ClawStatus.Success)
@@ -522,12 +522,12 @@ internal fun ClawComponentShowcase(modifier: Modifier = Modifier) {
         )
         ClawListItem(
           title = "Provider setup",
-          subtitle = "灵机网关",
+          subtitle = "Memento 网关",
           metadata = "8m",
         )
       }
 
-      ClawTextField(value = prompt, onValueChange = { prompt = it }, placeholder = "向灵机提问", minLines = 3)
+      ClawTextField(value = prompt, onValueChange = { prompt = it }, placeholder = "向 Memento 提问", minLines = 3)
 
       Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         ClawPrimaryButton(text = "Start Chat", onClick = {}, modifier = Modifier.weight(1f))
@@ -542,7 +542,7 @@ internal fun ClawComponentShowcase(modifier: Modifier = Modifier) {
 
       ClawEmptyState(
         title = "Nothing needs your attention",
-        body = "灵机将在此显示审批、失败任务和通道问题",
+        body = "Memento 将在此显示审批、失败任务和通道问题",
       )
 
       ClawBottomNav(

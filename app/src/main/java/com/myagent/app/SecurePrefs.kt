@@ -10,7 +10,7 @@ import kotlinx.coroutines.flow.StateFlow
 import java.util.UUID
 
 /**
- * 灵机 v2.0 偏好设置 — 外观、onboarding 等简单配置。
+ * Memento v2.0 偏好设置 — 外观、onboarding 等简单配置。
  */
 class SecurePrefs(context: Context) {
   companion object {

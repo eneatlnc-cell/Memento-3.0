@@ -66,7 +66,7 @@ fun ActivationScreen(
     ) {
       // 品牌标识
       Text(
-        text = "灵机",
+        text = "Memento",
         color = Color.White,
         fontSize = 36.sp,
         fontWeight = FontWeight.Bold,
@@ -74,7 +74,7 @@ fun ActivationScreen(
       )
       Spacer(modifier = Modifier.height(4.dp))
       Text(
-        text = "MYAGENT",
+        text = "MEMENTO",
         color = Color.White.copy(alpha = 0.4f),
         fontSize = 14.sp,
         fontWeight = FontWeight.Light,
@@ -176,7 +176,7 @@ fun ActivationScreen(
       Spacer(modifier = Modifier.height(32.dp))
 
       Text(
-        text = "请输入有效的激活码以解锁灵机",
+        text = "请输入有效的激活码以解锁 Memento",
         color = Color.White.copy(alpha = 0.3f),
         fontSize = 12.sp,
         textAlign = TextAlign.Center,

@@ -14,6 +14,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "MyAgentAndroid"
+rootProject.name = "Memento"
 include(":app")
 //include(":benchmark")  // benchmark module requires additional plugins, skip for now

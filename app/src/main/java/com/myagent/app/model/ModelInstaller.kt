@@ -292,7 +292,7 @@ class ModelInstaller(private val context: Context) {
         requestMethod = "HEAD"
         connectTimeout = CONNECT_TIMEOUT_MS
         readTimeout = READ_TIMEOUT_MS
-        setRequestProperty("User-Agent", "Lingji/2.0")
+        setRequestProperty("User-Agent", "Memento/2.0")
       }
       val length = connection.contentLengthLong
       Log.i("ModelInstaller", "HEAD $urlStr → Content-Length: $length, response: ${connection.responseCode}")
@@ -322,7 +322,7 @@ class ModelInstaller(private val context: Context) {
         requestMethod = "GET"
         connectTimeout = CONNECT_TIMEOUT_MS
         readTimeout = READ_TIMEOUT_MS
-        setRequestProperty("User-Agent", "Lingji/2.0")
+        setRequestProperty("User-Agent", "Memento/2.0")
         // 断点续传：如果已有部分数据，从断点处继续
         if (existingBytes > 0) {
           setRequestProperty("Range", "bytes=$existingBytes-")

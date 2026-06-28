@@ -18,11 +18,11 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import kotlinx.coroutines.delay
 
 /**
- * 灵机品牌开屏 — 像素块风格，黑白底色。
+ * Memento 品牌开屏 — 像素块风格，黑白底色。
  *
  * 设计：
  * - 纯黑背景
- * - "灵机" 居中，像素块拼成（白色）
+ * - "Memento" 居中，像素块拼成（白色）
  * - "INSPIRATION" 下方小字，像素块拼成（灰色）
  * - 先淡入 → 停留 1 秒 → 淡出 → 进入主界面
  */
@@ -107,7 +107,7 @@ fun LingjiSplashScreen(
       val h = size.height
       val alphaValue = alpha.value
 
-      // ── 中文标题 "灵机" ──
+      // ── 中文标题 "Memento" ──
       val cnPixelSize = w * 0.022f  // 每个像素块的大小
       val cnGap = cnPixelSize * 0.3f
       val cnGrid = 16  // 16×16 网格

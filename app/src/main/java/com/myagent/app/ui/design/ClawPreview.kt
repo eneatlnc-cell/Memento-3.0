@@ -4,7 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
 
 @Preview(
-  name = "灵机设计系统",
+  name = "Memento 设计系统",
   showBackground = true,
   backgroundColor = 0xFF030303,
 )

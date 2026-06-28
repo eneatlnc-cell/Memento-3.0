@@ -20,7 +20,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * 灵机 v2.0 运行时 — 管理 UI 状态、聊天控制器、模型加载器、下载状态。
+ * Memento v2.0 运行时 — 管理 UI 状态、聊天控制器、模型加载器、下载状态。
  *
  * v2.0：LiteRT-LM 替代 llama.cpp，纯 Kotlin 推理，无需 nativeLibDir。
  * 新增：仪式感人格锁定 + 视频画质可配置。

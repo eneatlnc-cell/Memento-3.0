@@ -111,7 +111,7 @@ fun WelcomeScreen(
 
       // 主标题
       Text(
-        text = "欢迎来到灵机",
+        text = "欢迎来到 Memento",
         color = Color.White,
         fontSize = 28.sp,
         fontWeight = FontWeight.Bold,

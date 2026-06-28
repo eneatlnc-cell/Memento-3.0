@@ -1,8 +1,8 @@
 <resources>
-    <string name="app_name">灵机</string>
-    <string name="chat_hint">和灵机说点什么...</string>
+    <string name="app_name">Memento</string>
+    <string name="chat_hint">和 Memento 说点什么...</string>
     <string name="chat_send">发送</string>
-    <string name="chat_empty">开始和灵机聊天吧！</string>
+    <string name="chat_empty">开始和 Memento 聊天吧！</string>
     <string name="chat_abort">停止生成</string>
     <string name="chat_error">发送失败，请重试</string>
     <string name="persona_title">选择人格</string>
@@ -13,20 +13,20 @@
     <string name="settings_title">设置</string>
     <string name="settings_persona">AI 人格</string>
     <string name="settings_appearance">外观</string>
-    <string name="settings_about">关于灵机</string>
-    <string name="onboarding_welcome">欢迎来到灵机</string>
+    <string name="settings_about">关于 Memento</string>
+    <string name="onboarding_welcome">欢迎来到 Memento</string>
     <string name="onboarding_subtitle">你的 AI 搭子，永远在线</string>
     <string name="onboarding_start">开始使用</string>
     <string name="tab_chat">聊天</string>
     <string name="tab_settings">设置</string>
     <string name="loading">加载中...</string>
-    <string name="download_title">正在激活灵机</string>
+    <string name="download_title">正在激活 Memento</string>
     <string name="download_desc">首次使用需要下载 AI 模型（约 200MB）</string>
     <string name="download_skip">跳过，先用 Mock 模式</string>
     <string name="download_retry">重试</string>
     <string name="download_connecting">正在连接服务器...</string>
     <string name="download_verifying">正在校验模型文件...</string>
     <string name="download_complete">激活完成！</string>
-    <string name="download_complete_desc">灵机已就绪，开始你的 AI 之旅吧</string>
+    <string name="download_complete_desc">Memento 已就绪，开始你的 AI 之旅吧</string>
     <string name="download_failed">下载失败</string>
 </resources>

@@ -106,7 +106,7 @@ fun PersonaSelectionScreen(
 
       // 标题
       Text(
-        text = "你的灵机，由你定义",
+        text = "你的 Memento，由你定义",
         fontSize = 28.sp,
         fontWeight = FontWeight.Bold,
         color = Color.White,
@@ -115,7 +115,7 @@ fun PersonaSelectionScreen(
       )
       Spacer(modifier = Modifier.height(8.dp))
       Text(
-        text = "选择一种人格，灵机将用这种风格陪伴你",
+        text = "选择一种人格，Memento 将用这种风格陪伴你",
         fontSize = 15.sp,
         color = Color.White.copy(alpha = 0.7f),
         textAlign = TextAlign.Center,
@@ -336,7 +336,7 @@ fun PersonaSelectionScreen(
           )
           Spacer(modifier = Modifier.height(20.dp))
           Text(
-            text = "灵机已记住你的选择",
+            text = "Memento 已记住你的选择",
             fontSize = 26.sp,
             fontWeight = FontWeight.Bold,
             color = Color.White,

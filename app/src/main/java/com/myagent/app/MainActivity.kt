@@ -11,7 +11,7 @@ import androidx.compose.runtime.getValue
 import androidx.core.view.WindowCompat
 
 /**
- * 灵机 v2.0 主 Activity — 单一 Activity 架构，使用 Jetpack Compose。
+ * Memento v2.0 主 Activity — 单一 Activity 架构，使用 Jetpack Compose。
  *
  * 启动流程：欢迎页 → 激活页 → 模型下载 → 人格选择 → 对话。
  */

@@ -247,7 +247,7 @@ class DownloadForegroundService : Service() {
   private fun updateNotificationCompleted() {
     val notification = buildNotification(
       title = "模型下载完成",
-      content = "灵机 AI 模型已就绪",
+      content = "Memento AI 模型已就绪",
       progress = 0,
       maxProgress = 0,
       ongoing = false,

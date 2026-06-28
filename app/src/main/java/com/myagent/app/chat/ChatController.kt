@@ -87,7 +87,7 @@ class ChatController(
             append("\n--- 当前对话 ---\n")
           }
           append("用户: $trimmed\n")
-          append("灵机: ")
+          append("Memento: ")
         }
 
         // 4. 流式推理
@@ -153,7 +153,7 @@ class ChatController(
   }
 
   /**
-   * 检测是否为循环输出（如 "灵机: 灵机: 灵机:"）
+   * 检测是否为循环输出（如 "Memento: Memento: Memento:"）
    */
   private fun isLoopOutput(text: String): Boolean {
     if (text.length < 3) return false

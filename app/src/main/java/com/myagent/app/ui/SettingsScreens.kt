@@ -142,7 +142,7 @@ fun SettingsScreen(
     Spacer(modifier = Modifier.height(32.dp))
 
     Text(
-      text = "灵机 v2.0",
+      text = "Memento v2.0",
       style = MaterialTheme.typography.bodySmall,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
