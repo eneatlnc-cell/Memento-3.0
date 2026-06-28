@@ -56,6 +56,11 @@ fun OnboardingFlow(
   val downloadState by viewModel.downloadState.collectAsState()
   val context = LocalContext.current
 
+  // 进入下载页时自动触发下载
+  LaunchedEffect(Unit) {
+    viewModel.startModelDownload()
+  }
+
   // 下载完成后自动跳到人格选择；未完成则强制回到下载页
   LaunchedEffect(downloadState, step) {
     when {

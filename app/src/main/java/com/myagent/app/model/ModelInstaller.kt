@@ -295,8 +295,10 @@ class ModelInstaller(private val context: Context) {
         setRequestProperty("User-Agent", "Lingji/2.0")
       }
       val length = connection.contentLengthLong
+      Log.i("ModelInstaller", "HEAD $urlStr → Content-Length: $length, response: ${connection.responseCode}")
       return if (length > 0) length else -1
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+      Log.e("ModelInstaller", "HEAD request failed: ${e.message}", e)
       return -1
     } finally {
       connection?.disconnect()
