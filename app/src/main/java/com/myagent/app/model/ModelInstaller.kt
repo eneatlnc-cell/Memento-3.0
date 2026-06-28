@@ -3,12 +3,14 @@ package com.myagent.app.model
 import android.content.Context
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -78,8 +80,9 @@ class ModelInstaller(private val context: Context) {
       return@flow
     }
 
-    // 如果文件存在但校验失败，删除重新下载
-    if (modelFile.exists()) {
+    // 保留已下载的部分文件用于断点续传
+    // 仅在文件为空（0 字节）时删除，避免丢失已下载的进度
+    if (modelFile.exists() && modelFile.length() == 0L) {
       modelFile.delete()
     }
 
@@ -102,12 +105,14 @@ class ModelInstaller(private val context: Context) {
         val progressChannel = Channel<Pair<Long, Long>>(Channel.CONFLATED)
 
         val downloadJob = launch(Dispatchers.IO) {
-          try {
-            downloadFile(DOWNLOAD_URL, modelFile, existingBytes, totalSize) { downloaded, speed ->
-              progressChannel.trySend(downloaded to speed)
+          withContext(NonCancellable) {
+            try {
+              downloadFile(DOWNLOAD_URL, modelFile, existingBytes, totalSize) { downloaded, speed ->
+                progressChannel.trySend(downloaded to speed)
+              }
+            } finally {
+              progressChannel.close()
             }
-          } finally {
-            progressChannel.close()
           }
         }
 

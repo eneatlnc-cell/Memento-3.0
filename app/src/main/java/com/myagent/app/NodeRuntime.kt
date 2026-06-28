@@ -56,7 +56,10 @@ class NodeRuntime(
 
   // --- 模型下载状态 ---
 
-  private val _downloadState = MutableStateFlow<ModelDownloadState>(ModelDownloadState.Idle)
+  private val _downloadState = MutableStateFlow<ModelDownloadState>(
+    if (modelInstaller.isModelReady()) ModelDownloadState.Completed
+    else ModelDownloadState.Idle
+  )
   val downloadState: StateFlow<ModelDownloadState> = _downloadState.asStateFlow()
 
   private var downloadJob: Job? = null

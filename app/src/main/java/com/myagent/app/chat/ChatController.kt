@@ -3,6 +3,7 @@ package com.myagent.app.chat
 import com.myagent.app.memory.MemoryManager
 import com.myagent.app.model.LocalModelLoader
 import com.myagent.app.model.PersonaManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -118,6 +119,9 @@ class ChatController(
 
         _streamingText.value = null
         _isLoading.value = false
+      } catch (e: CancellationException) {
+        // 协程被取消（用户中止等），重新抛出，不显示为错误
+        throw e
       } catch (e: Exception) {
         _errorText.value = e.message ?: "发送失败，请重试"
         _streamingText.value = null

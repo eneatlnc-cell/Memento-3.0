@@ -2,6 +2,7 @@ package com.myagent.app.model
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
@@ -57,7 +58,10 @@ class LocalModelLoader(
       }
       initialized = true
       Log.i(TAG, "LiteRT-LM engine ready: $path")
-    } catch (e: Exception) {
+    } catch (e: CancellationException) {
+          // 协程被取消，重新抛出，不记录为错误
+          throw e
+        } catch (e: Exception) {
       Log.e(TAG, "Engine init failed: ${e.message}, falling back to Mock")
       initialized = false
     }
@@ -81,6 +85,9 @@ class LocalModelLoader(
           engine.generate(prompt).collect { chunk ->
             trySend(chunk)
           }
+        } catch (e: CancellationException) {
+          // 协程被取消，重新抛出
+          throw e
         } catch (e: Exception) {
           Log.e(TAG, "Inference error: ${e.message}")
         }
