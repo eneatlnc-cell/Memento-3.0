@@ -134,9 +134,16 @@ fun ModelDownloadScreen(
           )
           Spacer(modifier = Modifier.height(8.dp))
           Text(
-            text = "首次使用需要加载基座大模型（约 3.7 GB）",
+            text = "首次使用需要加载基座大模型（约 3.7 GB，展开后约 5.5 GB）",
             fontSize = 14.sp,
             color = Color(0xFFA8E6CF).copy(alpha = 0.6f),
+            textAlign = TextAlign.Center,
+          )
+          Spacer(modifier = Modifier.height(4.dp))
+          Text(
+            text = "推荐骁龙 8 Gen2+ / 天玑 9200+ · 8GB+ RAM",
+            fontSize = 12.sp,
+            color = Color(0xFFA8E6CF).copy(alpha = 0.35f),
             textAlign = TextAlign.Center,
           )
           Spacer(modifier = Modifier.height(28.dp))
