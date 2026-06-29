@@ -17,6 +17,7 @@ kotlin = "2.3.0"
 litertlm = "0.9.0"
 onnxruntime = "1.21.0"
 material = "1.14.0"
+navigation-compose = "2.9.4"
 room = "2.7.1"
 serialization-json = "1.11.0"
 
@@ -49,6 +50,7 @@ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 litertlm-android = { module = "com.google.ai.edge.litertlm:litertlm-android", version.ref = "litertlm" }
 onnxruntime-android = { module = "com.microsoft.onnxruntime:onnxruntime-android", version.ref = "onnxruntime" }
 material = { module = "com.google.android.material:material", version.ref = "material" }
+navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigation-compose" }
 room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
 room-ktx = { module = "androidx.room:room-ktx", version.ref = "room" }
 room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }

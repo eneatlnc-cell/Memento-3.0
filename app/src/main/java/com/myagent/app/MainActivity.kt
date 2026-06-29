@@ -1,6 +1,6 @@
 package com.myagent.app
 
-import com.myagent.app.ui.OpenClawTheme
+import com.myagent.app.ui.MementoTheme
 import com.myagent.app.ui.RootScreen
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -24,7 +24,7 @@ class MainActivity : ComponentActivity() {
 
     setContent {
       val appearanceThemeMode by viewModel.appearanceThemeMode.collectAsState()
-      OpenClawTheme(themeMode = appearanceThemeMode) {
+      MementoTheme(themeMode = appearanceThemeMode) {
         RootScreen(viewModel = viewModel)
       }
     }

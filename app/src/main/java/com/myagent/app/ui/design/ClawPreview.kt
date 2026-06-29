@@ -1,5 +1,6 @@
 package com.myagent.app.ui.design
 
+import com.myagent.app.ui.MementoTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
 
@@ -10,8 +11,7 @@ import androidx.compose.ui.tooling.preview.Preview
 )
 @Composable
 private fun ClawComponentShowcasePreview() {
-  // Preview uses the design-system theme directly so token regressions show up in isolation.
-  ClawDesignTheme {
+  MementoTheme {
     ClawComponentShowcase()
   }
 }

@@ -46,11 +46,14 @@ import androidx.compose.ui.unit.sp
  *
  * 注意：欢迎页已移至 RootScreen 作为第一步。
  * 模型下载强制完成，退出下载页时启动 ForegroundService 后台下载。
+ *
+ * @param onComplete 引导完成后回调，由 NavHost 触发导航到主界面。
  */
 @Composable
 fun OnboardingFlow(
   viewModel: MainViewModel,
   modifier: Modifier = Modifier,
+  onComplete: () -> Unit = {},
 ) {
   var step by rememberSaveable { mutableIntStateOf(0) }
   val downloadState by viewModel.downloadState.collectAsState()
@@ -85,6 +88,7 @@ fun OnboardingFlow(
         onSelect = { persona ->
           viewModel.lockPersona(persona)
           viewModel.setOnboardingCompleted(true)
+          onComplete()
         },
       )
     }

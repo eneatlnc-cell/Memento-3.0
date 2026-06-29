@@ -1,17 +1,10 @@
 package com.myagent.app.ui.design
 
-import com.myagent.app.ui.LocalMobileColors
-import com.myagent.app.ui.darkMobileColors
-import com.myagent.app.ui.lightMobileColors
-import com.myagent.app.ui.mobileFontFamily
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -27,7 +20,7 @@ import androidx.compose.ui.unit.sp
  * App color tokens consumed by ClawTheme and bridged into Material components.
  */
 @Immutable
-internal data class ClawColors(
+data class ClawColors(
   val canvas: Color,
   val surface: Color,
   val surfaceRaised: Color,
@@ -51,7 +44,7 @@ internal data class ClawColors(
  * App spacing scale for Compose screens and shared controls.
  */
 @Immutable
-internal data class ClawSpacing(
+data class ClawSpacing(
   val xxxs: Dp = 4.dp,
   val xxs: Dp = 8.dp,
   val xs: Dp = 12.dp,
@@ -67,7 +60,7 @@ internal data class ClawSpacing(
  * Radius scale for rows, panels, controls, sheets, and status pills.
  */
 @Immutable
-internal data class ClawRadii(
+data class ClawRadii(
   val row: Dp = 4.dp,
   val panel: Dp = 5.dp,
   val control: Dp = 6.dp,
@@ -80,7 +73,7 @@ internal data class ClawRadii(
  * App text styles kept independent from Material typography names.
  */
 @Immutable
-internal data class ClawTypography(
+data class ClawTypography(
   val display: TextStyle,
   val title: TextStyle,
   val section: TextStyle,
@@ -90,7 +83,7 @@ internal data class ClawTypography(
   val mono: TextStyle,
 )
 
-private val ClawDarkColors =
+internal val ClawDarkColors =
   ClawColors(
     canvas = Color(0xFF0A0A0F),
     surface = Color(0xFF14141F),
@@ -111,7 +104,7 @@ private val ClawDarkColors =
     dangerSoft = Color(0xFF2C1414),
   )
 
-private val ClawLightColors =
+internal val ClawLightColors =
   ClawColors(
     canvas = Color(0xFFFAFBFC),
     surface = Color(0xFFFFFFFF),
@@ -132,15 +125,15 @@ private val ClawLightColors =
     dangerSoft = Color(0xFFFFECEC),
   )
 
-private val LocalClawColors = staticCompositionLocalOf { ClawDarkColors }
-private val LocalClawSpacing = staticCompositionLocalOf { ClawSpacing() }
-private val LocalClawRadii = staticCompositionLocalOf { ClawRadii() }
-private val LocalClawTypography = staticCompositionLocalOf { clawTypography(mobileFontFamily) }
+internal val LocalClawColors = staticCompositionLocalOf { ClawDarkColors }
+internal val LocalClawSpacing = staticCompositionLocalOf { ClawSpacing() }
+internal val LocalClawRadii = staticCompositionLocalOf { ClawRadii() }
+internal val LocalClawTypography = staticCompositionLocalOf { clawTypography(FontFamily.Default) }
 
 /**
  * Composition-local access point for Memento Android 设计令牌.
  */
-internal object ClawTheme {
+object ClawTheme {
   val colors: ClawColors
     @Composable
     @ReadOnlyComposable
@@ -163,40 +156,12 @@ internal object ClawTheme {
 }
 
 /**
- * 安装 Memento 设计令牌 and maps them into MaterialTheme for Material3 controls.
- */
-@Composable
-internal fun ClawDesignTheme(
-  dark: Boolean = true,
-  content: @Composable () -> Unit,
-) {
-  val colors = if (dark) ClawDarkColors else ClawLightColors
-  val mobileColors = if (dark) darkMobileColors() else lightMobileColors()
-  val typography = clawTypography(mobileFontFamily)
-
-  CompositionLocalProvider(
-    LocalClawColors provides colors,
-    LocalMobileColors provides mobileColors,
-    LocalClawSpacing provides ClawSpacing(),
-    LocalClawRadii provides ClawRadii(),
-    LocalClawTypography provides typography,
-  ) {
-    MaterialTheme(
-      colorScheme = clawMaterialColorScheme(colors, dark),
-      typography = materialTypography(typography),
-      shapes = Shapes(),
-      content = content,
-    )
-  }
-}
-
-/**
  * Returns the system dark-mode preference for callers that expose theme selection.
  */
 @Composable
 internal fun rememberClawDarkPreference(): Boolean = isSystemInDarkTheme()
 
-private fun clawTypography(fontFamily: FontFamily) =
+internal fun clawTypography(fontFamily: FontFamily) =
   ClawTypography(
     display =
       TextStyle(
@@ -256,7 +221,7 @@ private fun clawTypography(fontFamily: FontFamily) =
       ),
   )
 
-private fun materialTypography(type: ClawTypography) =
+internal fun materialTypography(type: ClawTypography) =
   Typography(
     displayMedium = type.display,
     titleLarge = type.title,
@@ -266,7 +231,7 @@ private fun materialTypography(type: ClawTypography) =
     labelSmall = type.caption,
   )
 
-private fun clawMaterialColorScheme(
+internal fun clawMaterialColorScheme(
   colors: ClawColors,
   dark: Boolean,
 ) = if (dark) {

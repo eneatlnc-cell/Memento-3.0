@@ -4,7 +4,6 @@ import com.myagent.app.MainViewModel
 import com.myagent.app.model.PersonaType
 import com.myagent.app.ui.chat.ChatScreen
 import com.myagent.app.ui.design.ClawBottomNav
-import com.myagent.app.ui.design.ClawDesignTheme
 import com.myagent.app.ui.design.ClawNavItem
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -27,6 +26,7 @@ import androidx.compose.ui.Modifier
  * 主界面 Shell — 底部导航栏切换聊天页和设置页。
  *
  * v2.0：集成全屏仪式感人格选择界面。
+ * 主题由父级 MementoTheme 统一提供，不再自行包装 ClawDesignTheme。
  */
 @Composable
 fun ShellScreen(
@@ -41,51 +41,49 @@ fun ShellScreen(
     ClawNavItem(key = "settings", label = "设置", icon = Icons.Outlined.Settings),
   )
 
-  ClawDesignTheme {
-    Scaffold(
-      modifier = modifier,
-      bottomBar = {
-        if (!showPersonaSelection) {
-          ClawBottomNav(
-            items = navItems,
-            selectedKey = selectedTab,
-            onSelect = { selectedTab = it },
-          )
-        }
-      },
-    ) { innerPadding ->
-      when (selectedTab) {
-        "chat" -> ChatScreen(
-          viewModel = viewModel,
-          modifier = Modifier
-            .fillMaxSize()
-            .padding(innerPadding),
-        )
-        "settings" -> SettingsScreen(
-          viewModel = viewModel,
-          modifier = Modifier
-            .fillMaxSize()
-            .padding(innerPadding),
-          onRequestPersonaSelection = { showPersonaSelection = true },
+  Scaffold(
+    modifier = modifier,
+    bottomBar = {
+      if (!showPersonaSelection) {
+        ClawBottomNav(
+          items = navItems,
+          selectedKey = selectedTab,
+          onSelect = { selectedTab = it },
         )
       }
-    }
-
-    // 全屏人格选择叠加层
-    AnimatedVisibility(
-      visible = showPersonaSelection,
-      enter = fadeIn(),
-      exit = fadeOut(),
-    ) {
-      PersonaSelectionScreen(
-        onConfirmed = { type: PersonaType ->
-          viewModel.lockPersona(type)
-          showPersonaSelection = false
-        },
-        onDismiss = {
-          showPersonaSelection = false
-        },
+    },
+  ) { innerPadding ->
+    when (selectedTab) {
+      "chat" -> ChatScreen(
+        viewModel = viewModel,
+        modifier = Modifier
+          .fillMaxSize()
+          .padding(innerPadding),
+      )
+      "settings" -> SettingsScreen(
+        viewModel = viewModel,
+        modifier = Modifier
+          .fillMaxSize()
+          .padding(innerPadding),
+        onRequestPersonaSelection = { showPersonaSelection = true },
       )
     }
+  }
+
+  // 全屏人格选择叠加层
+  AnimatedVisibility(
+    visible = showPersonaSelection,
+    enter = fadeIn(),
+    exit = fadeOut(),
+  ) {
+    PersonaSelectionScreen(
+      onConfirmed = { type: PersonaType ->
+        viewModel.lockPersona(type)
+        showPersonaSelection = false
+      },
+      onDismiss = {
+        showPersonaSelection = false
+      },
+    )
   }
 }

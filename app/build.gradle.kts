@@ -118,6 +118,9 @@ dependencies {
   implementation(libs.commonmark.ext.task.list.items)
   implementation(libs.coil.compose)
 
+  // Navigation Compose
+  implementation(libs.navigation.compose)
+
   // Room (SQLite memory layer)
   implementation(libs.room.runtime)
   implementation(libs.room.ktx)
