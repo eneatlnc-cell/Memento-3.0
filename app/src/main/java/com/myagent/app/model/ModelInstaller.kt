@@ -40,7 +40,7 @@ class ModelInstaller(private val context: Context) {
     const val MODEL_FILE_NAME = "mynagent-v1-it.litertlm"
 
     private const val DOWNLOAD_URL =
-      "https://ljsour.oss-cn-beijing.aliyuncs.com/myaengt-v1-it.litertlm"
+      "https://memento.tos-cn-beijing.volces.com/memento-E4B-it.litertlm"
 
     /** SHA256 校验值 */
     private const val EXPECTED_SHA256 =
