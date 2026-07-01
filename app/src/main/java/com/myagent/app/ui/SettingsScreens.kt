@@ -380,8 +380,7 @@ private fun DataDialog(
   onClearAll: () -> Unit,
   onDismiss: () -> Unit,
 ) {
-  var showConfirmClearChat by remember { mutableStateOf(false) }
-  var showConfirmClearAll by remember { mutableStateOf(false) }
+  var showConfirmClearMemory by remember { mutableStateOf(false) }
 
   AlertDialog(
     onDismissRequest = onDismiss,
@@ -389,31 +388,36 @@ private fun DataDialog(
     text = {
       Column {
         Text(
-          text = "聊天记录存储在本地设备上，清除后不可恢复。",
+          text = "数据存储在本地设备上。",
           style = MaterialTheme.typography.bodyMedium,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(modifier = Modifier.height(16.dp))
+        // 清除缓存 — 无需二次确认
         Button(
-          onClick = { showConfirmClearChat = true },
+          onClick = {
+            onClearChat()
+            onDismiss()
+          },
           modifier = Modifier.fillMaxWidth(),
           colors = ButtonDefaults.buttonColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant,
             contentColor = MaterialTheme.colorScheme.onSurface,
           ),
         ) {
-          Text("清除聊天记录")
+          Text("清除缓存")
         }
         Spacer(modifier = Modifier.height(8.dp))
+        // 清除记忆 — 需要二次确认
         Button(
-          onClick = { showConfirmClearAll = true },
+          onClick = { showConfirmClearMemory = true },
           modifier = Modifier.fillMaxWidth(),
           colors = ButtonDefaults.buttonColors(
             containerColor = Color(0xFFFFECEC),
             contentColor = Color(0xFFE87070),
           ),
         ) {
-          Text("清除所有数据（聊天 + 记忆）")
+          Text("清除记忆")
         }
       }
     },
@@ -422,42 +426,23 @@ private fun DataDialog(
     },
   )
 
-  // 二次确认：清除聊天记录
-  if (showConfirmClearChat) {
+  // 二次确认：清除记忆
+  if (showConfirmClearMemory) {
     AlertDialog(
-      onDismissRequest = { showConfirmClearChat = false },
-      title = { Text("确认清除") },
-      text = { Text("确定要清除所有聊天记录吗？此操作不可撤销。") },
+      onDismissRequest = { showConfirmClearMemory = false },
+      title = { Text("确认清除记忆") },
+      text = { Text("确定要清除所有记忆数据吗？此操作不可撤销。") },
       confirmButton = {
         TextButton(
           onClick = {
-            showConfirmClearChat = false
-            onClearChat()
+            showConfirmClearMemory = false
+            onClearAll()
+            onDismiss()
           },
         ) { Text("确定", color = Color(0xFFE87070)) }
       },
       dismissButton = {
-        TextButton(onClick = { showConfirmClearChat = false }) { Text("取消") }
-      },
-    )
-  }
-
-  // 二次确认：清除所有数据
-  if (showConfirmClearAll) {
-    AlertDialog(
-      onDismissRequest = { showConfirmClearAll = false },
-      title = { Text("确认清除全部") },
-      text = { Text("确定要清除聊天记录和所有记忆数据吗？此操作不可撤销。") },
-      confirmButton = {
-        TextButton(
-          onClick = {
-            showConfirmClearAll = false
-            onClearAll()
-          },
-        ) { Text("确定清除", color = Color(0xFFE87070)) }
-      },
-      dismissButton = {
-        TextButton(onClick = { showConfirmClearAll = false }) { Text("取消") }
+        TextButton(onClick = { showConfirmClearMemory = false }) { Text("取消") }
       },
     )
   }
