@@ -35,8 +35,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -76,11 +78,18 @@ fun ChatScreen(
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   val skinColors = LocalSkinColors.current
+  // 并发 TTS 播放防护
+  var isPlayingTts by remember { mutableStateOf(false) }
 
-  // 自动滚动到最新消息 — 使用 scrollToItem 而非 animateScrollToItem，避免每 token 触发动画卡顿
+  // 自动滚动到最新消息 — 仅当用户在底部附近时自动滚动，避免打断用户回看历史消息
   LaunchedEffect(messages.size, streamingText) {
     if (messages.isNotEmpty()) {
-      listState.scrollToItem(messages.size - 1)
+      val layout = listState.layoutInfo
+      val lastVisible = layout.visibleItemsInfo.lastOrNull()
+      val isAtBottom = lastVisible != null && lastVisible.index >= messages.size - 2
+      if (isAtBottom) {
+        listState.scrollToItem(messages.size - 1)
+      }
     }
   }
 
@@ -128,8 +137,15 @@ fun ChatScreen(
         MessageBubble(
           message = message,
           onPlayTts = { text ->
-            scope.launch {
-              playTts(viewModel, context, message.id, text)
+            if (!isPlayingTts) {
+              isPlayingTts = true
+              scope.launch {
+                try {
+                  playTts(viewModel, context, message.id, text)
+                } finally {
+                  isPlayingTts = false
+                }
+              }
             }
           },
         )
@@ -143,17 +159,17 @@ fun ChatScreen(
       }
 
       // 流式文字
-      if (!streamingText.isNullOrEmpty()) {
+      streamingText?.let { text ->
         item {
-          StreamingTextBubble(text = streamingText!!)
+          StreamingTextBubble(text = text)
         }
       }
 
       // 错误提示
-      if (error != null) {
+      error?.let { err ->
         item {
           Text(
-            text = error!!,
+            text = err,
             color = MaterialTheme.colorScheme.error,
             fontSize = 13.sp,
             modifier = Modifier.padding(vertical = 4.dp),
@@ -278,6 +294,7 @@ private suspend fun playTts(
   messageId: String,
   text: String,
 ) {
+  val tmp = File(context.cacheDir, "tts_${messageId}.wav")
   try {
     val wav = withContext(Dispatchers.Default) {
       viewModel.synthesizeSpeech(text)
@@ -286,26 +303,31 @@ private suspend fun playTts(
       android.widget.Toast.makeText(context, "无法播放语音", android.widget.Toast.LENGTH_SHORT).show()
       return
     }
-    val tmp = File(context.cacheDir, "tts_${messageId}.wav")
     FileOutputStream(tmp).use { it.write(wav) }
     withContext(Dispatchers.Main) {
       val mp = MediaPlayer()
       try {
         mp.setDataSource(tmp.absolutePath)
         mp.setOnPreparedListener { it.start() }
-        mp.setOnCompletionListener { it.release() }
+        mp.setOnCompletionListener {
+          it.release()
+          tmp.delete() // 播放完成后清理临时文件
+        }
         mp.setOnErrorListener { _, _, _ ->
           mp.release()
+          tmp.delete()
           android.widget.Toast.makeText(context, "无法播放语音", android.widget.Toast.LENGTH_SHORT).show()
           true
         }
         mp.prepareAsync()
       } catch (e: Exception) {
         mp.release()
+        tmp.delete()
         android.widget.Toast.makeText(context, "无法播放语音", android.widget.Toast.LENGTH_SHORT).show()
       }
     }
   } catch (e: Exception) {
+    tmp.delete()
     withContext(Dispatchers.Main) {
       android.widget.Toast.makeText(context, "无法播放语音", android.widget.Toast.LENGTH_SHORT).show()
     }

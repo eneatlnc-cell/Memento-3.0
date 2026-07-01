@@ -68,7 +68,8 @@ object MultiModalDispatcher {
    */
   suspend fun generateImage(prompt: String, style: String? = null): Bitmap {
     checkInitialized()
-    return imageGenerator!!.generate(prompt, style)
+    val gen = imageGenerator ?: throw IllegalStateException("ImageGenerator not initialized")
+    return gen.generate(prompt, style)
   }
 
   /**
@@ -76,7 +77,8 @@ object MultiModalDispatcher {
    */
   suspend fun editImage(prompt: String, sourceImage: Bitmap): Bitmap {
     checkInitialized()
-    return imageGenerator!!.edit(prompt, sourceImage)
+    val gen = imageGenerator ?: throw IllegalStateException("ImageGenerator not initialized")
+    return gen.edit(prompt, sourceImage)
   }
 
   /**
@@ -93,8 +95,9 @@ object MultiModalDispatcher {
     speed: Float = 1.0f,
   ): ByteArray {
     checkInitialized()
+    val tts = ttsEngine ?: throw IllegalStateException("TTS engine not initialized")
     return withContext(Dispatchers.Default) {
-      ttsEngine!!.synthesize(text, voice, speed)
+      tts.synthesize(text, voice, speed)
     }
   }
 
@@ -108,8 +111,9 @@ object MultiModalDispatcher {
     onChunk: (ByteArray) -> Unit,
   ) {
     checkInitialized()
+    val tts = ttsEngine ?: throw IllegalStateException("TTS engine not initialized")
     withContext(Dispatchers.Default) {
-      ttsEngine!!.synthesizeStreaming(text, voice, speed, onChunk)
+      tts.synthesizeStreaming(text, voice, speed, onChunk)
     }
   }
 
@@ -132,7 +136,8 @@ object MultiModalDispatcher {
     onProgress: ((Float) -> Unit)? = null,
   ): File {
     checkInitialized()
-    return videoRenderer!!.render(
+    val renderer = videoRenderer ?: throw IllegalStateException("VideoRenderer not initialized")
+    return renderer.render(
       prompt = prompt,
       duration = config.maxDuration,
       width = config.width,
@@ -154,7 +159,8 @@ object MultiModalDispatcher {
     onProgress: ((Float) -> Unit)? = null,
   ): File {
     checkInitialized()
-    return videoRenderer!!.render(prompt, duration, width, height, fps, onProgress)
+    val renderer = videoRenderer ?: throw IllegalStateException("VideoRenderer not initialized")
+    return renderer.render(prompt, duration, width, height, fps, onProgress)
   }
 
   /**

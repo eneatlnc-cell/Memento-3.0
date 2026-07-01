@@ -15,9 +15,9 @@ import java.io.FileOutputStream
  * MediaMetadataRetriever 提取帧 → 压缩为 JPEG → 作为多张图片传给 E4B。
  *
  * 限制：
- * - 视频最大 100MB
+ * - 视频最大 50MB
  * - 截取前 5 秒（不足则全部）
- * - 每秒采样 2-3 帧
+ * - 每秒采样 3 帧
  * - 每帧压缩至 1024 像素宽
  */
 object VideoFrameExtractor {
@@ -29,8 +29,8 @@ object VideoFrameExtractor {
   /** 每秒采样帧数 */
   const val FPS_SAMPLE = 3
 
-  /** 最大文件大小 */
-  private const val MAX_FILE_SIZE = 100L * 1024 * 1024
+  /** 最大文件大小（字节） */
+  const val MAX_FILE_SIZE = 50L * 1024 * 1024
 
   /**
    * 从视频 URI 提取帧列表。
@@ -106,6 +106,17 @@ object VideoFrameExtractor {
       0
     } finally {
       try { retriever.release() } catch (_: Exception) {}
+    }
+  }
+
+  /**
+   * 获取视频文件大小（字节），-1 表示获取失败。
+   */
+  fun getFileSize(context: Context, videoUri: Uri): Long {
+    return try {
+      context.contentResolver.openAssetFileDescriptor(videoUri, "r")?.use { it.length } ?: -1
+    } catch (_: Exception) {
+      -1
     }
   }
 }

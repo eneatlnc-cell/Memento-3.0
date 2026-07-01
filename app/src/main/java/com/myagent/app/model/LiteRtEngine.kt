@@ -57,6 +57,12 @@ class LiteRtEngine(private val context: Context) {
    */
   fun init(modelPath: String, maxTokens: Int = 512): Boolean {
     try {
+      // 防止重复初始化导致原生资源泄漏
+      if (engine != null) {
+        Log.w(TAG, "Engine already initialized, closing old instance first")
+        close()
+      }
+
       val caps = DeviceCapability.detect(context)
       val kvCacheTokens = when {
         caps.totalRamGb >= 12 -> 4096

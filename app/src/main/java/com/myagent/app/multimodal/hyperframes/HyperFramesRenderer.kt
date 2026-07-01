@@ -9,13 +9,13 @@ import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.os.Handler
 import android.os.Looper
+import android.text.TextUtils
 import android.util.Log
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.*
 import java.io.File
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
 
 /**
  * HyperFrames 端侧视频渲染器 — WebView + MediaCodec。
@@ -92,6 +92,7 @@ class HyperFramesRenderer(
     }
 
     encoder.stop()
+    wv.destroy()
     webView = null
     onProgress?.invoke(1.0f)
 
@@ -131,20 +132,31 @@ class HyperFramesRenderer(
     return wv
   }
 
-  private fun loadHtmlAndWait(wv: WebView, html: String): Boolean {
-    val latch = CountDownLatch(1)
-    var loaded = false
-    wv.webViewClient = object : WebViewClient() {
-      override fun onPageFinished(view: WebView?, url: String?) {
-        loaded = true
-        latch.countDown()
-      }
-    }
-    wv.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+  private suspend fun loadHtmlAndWait(wv: WebView, html: String): Boolean {
     return try {
-      latch.await(WEBVIEW_TIMEOUT_SEC, TimeUnit.SECONDS)
-      loaded
-    } catch (_: InterruptedException) {
+      withTimeout(WEBVIEW_TIMEOUT_SEC * 1000L) {
+        suspendCancellableCoroutine<Boolean> { cont ->
+          val handler = Handler(Looper.getMainLooper())
+          var resumed = false
+          wv.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+              if (!resumed) {
+                resumed = true
+                cont.resume(true)
+              }
+            }
+          }
+          wv.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+          cont.invokeOnCancellation {
+            if (!resumed) {
+              resumed = true
+              handler.post { wv.stopLoading() }
+            }
+          }
+        }
+      }
+    } catch (_: Exception) {
+      Log.e(TAG, "WebView 加载超时或取消")
       false
     }
   }
@@ -183,7 +195,7 @@ class HyperFramesRenderer(
     width: Int,
     height: Int,
   ): String {
-    val title = prompt.take(20).replace("\n", " ")
+    val title = TextUtils.htmlEncode(prompt.take(20).replace("\n", " "))
 
     return """
 <!DOCTYPE html>

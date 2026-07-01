@@ -1,9 +1,12 @@
 package com.myagent.app.ui.chat
 
 import android.Manifest
+import android.content.pm.PackageManager
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
@@ -53,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 多模态输入栏 — 加号折叠 + 按住说话。
@@ -87,8 +91,9 @@ fun ChatInputBar(
   // --- 语音模式 ---
   var isVoiceMode by remember { mutableStateOf(false) }
   var isRecording by remember { mutableStateOf(false) }
-  var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
-  var audioFile by remember { mutableStateOf<File?>(null) }
+  // 使用 AtomicReference 避免闭包捕获过期状态，确保 stopRecording 总能拿到正确的 recorder 引用
+  val recorderRef = remember { AtomicReference<MediaRecorder?>(null) }
+  val audioFileRef = remember { AtomicReference<File?>(null) }
   var hasMicPermission by remember { mutableStateOf(false) }
   val micPermissionLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.RequestPermission()
@@ -150,6 +155,8 @@ fun ChatInputBar(
             showSheet = false
             if (!hasMicPermission) {
               micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+              // 权限请求是异步的，不立即进入语音模式
+              return@SheetOption
             }
             isVoiceMode = true
           },
@@ -206,21 +213,39 @@ fun ChatInputBar(
           .pointerInput(Unit) {
             detectTapGestures(
               onPress = {
-                // 按下 → 开始录音
+                // 权限二次检查
+                if (!hasMicPermission) {
+                  Toast.makeText(context, "请先授予麦克风权限", Toast.LENGTH_SHORT).show()
+                  tryAwaitRelease()
+                  return@detectTapGestures
+                }
+                // 按下 → 开始录音（IO 线程避免 ANR）
                 isRecording = true
-                startRecording(context) { mr, file ->
-                  recorder = mr
-                  audioFile = file
+                var mr: MediaRecorder? = null
+                var file: File? = null
+                try {
+                  file = File(context.cacheDir, "voice_${System.currentTimeMillis()}.m4a")
+                  mr = createRecorder(context, file)
+                  mr.prepare()
+                  mr.start()
+                  recorderRef.set(mr)
+                  audioFileRef.set(file)
+                } catch (e: Exception) {
+                  Log.e("ChatInputBar", "Recording start failed: ${e.message}", e)
+                  isRecording = false
+                  isVoiceMode = false
+                  Toast.makeText(context, "录音启动失败，请重试", Toast.LENGTH_SHORT).show()
+                  mr?.release()
+                  tryAwaitRelease()
+                  return@detectTapGestures
                 }
                 try {
                   tryAwaitRelease()
                 } finally {
                   // 松手 → 停止录音并发送
-                  stopRecording(recorder, audioFile) { file ->
-                    onSendVoice(Uri.fromFile(file))
+                  stopRecording(recorderRef.getAndSet(null), audioFileRef.getAndSet(null)) { f ->
+                    onSendVoice(Uri.fromFile(f))
                   }
-                  recorder = null
-                  audioFile = null
                   isRecording = false
                   isVoiceMode = false
                 }
@@ -349,30 +374,23 @@ private fun SheetOption(
 
 // ── 录音工具函数 ──
 
-private fun startRecording(
+/** 创建并配置 MediaRecorder，不调用 prepare/start（由调用方在合适线程执行） */
+private fun createRecorder(
   context: android.content.Context,
-  onReady: (MediaRecorder, File) -> Unit,
-) {
-  try {
-    val file = File(context.cacheDir, "voice_${System.currentTimeMillis()}.m4a")
-    val mr = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-      MediaRecorder(context)
-    } else {
-      @Suppress("DEPRECATION")
-      MediaRecorder()
-    }.apply {
-      setAudioSource(MediaRecorder.AudioSource.MIC)
-      setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-      setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-      setAudioSamplingRate(16000)
-      setAudioEncodingBitRate(32000)
-      setOutputFile(file.absolutePath)
-      prepare()
-      start()
-    }
-    onReady(mr, file)
-  } catch (e: Exception) {
-    android.util.Log.e("ChatInputBar", "Recording failed: ${e.message}", e)
+  outputFile: File,
+): MediaRecorder {
+  return (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+    MediaRecorder(context)
+  } else {
+    @Suppress("DEPRECATION")
+    MediaRecorder()
+  }).apply {
+    setAudioSource(MediaRecorder.AudioSource.MIC)
+    setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+    setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+    setAudioSamplingRate(16000)
+    setAudioEncodingBitRate(32000)
+    setOutputFile(outputFile.absolutePath)
   }
 }
 
@@ -383,7 +401,13 @@ private fun stopRecording(
 ) {
   try {
     recorder?.stop()
+  } catch (e: Exception) {
+    Log.e("ChatInputBar", "Recorder stop failed: ${e.message}", e)
+  }
+  try {
     recorder?.release()
-  } catch (_: Exception) {}
+  } catch (e: Exception) {
+    Log.e("ChatInputBar", "Recorder release failed: ${e.message}", e)
+  }
   audioFile?.let { onComplete(it) }
 }

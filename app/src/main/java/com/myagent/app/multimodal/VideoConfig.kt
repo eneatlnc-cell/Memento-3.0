@@ -34,10 +34,10 @@ data class VideoConfig(
       val parts = raw.split(",").map { it.trim() }
       return try {
         VideoConfig(
-          width = parts.getOrElse(0) { "854" }.toInt(),
-          height = parts.getOrElse(1) { "480" }.toInt(),
-          fps = parts.getOrElse(2) { "24" }.toInt(),
-          maxDuration = parts.getOrElse(3) { "5" }.toInt(),
+          width = parts.getOrElse(0) { "854" }.toInt().coerceIn(320, 1920),
+          height = parts.getOrElse(1) { "480" }.toInt().coerceIn(240, 1080),
+          fps = parts.getOrElse(2) { "24" }.toInt().coerceIn(12, 60),
+          maxDuration = parts.getOrElse(3) { "5" }.toInt().coerceIn(DURATION_MIN, DURATION_MAX),
         )
       } catch (_: Exception) {
         LOW

@@ -18,6 +18,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
@@ -97,18 +98,26 @@ class ChatController(
 
       // 先复制到临时文件
       val tmpFile = File(cacheDir, "img_raw_${UUID.randomUUID()}")
-      contentResolver.openInputStream(uri)?.use { input ->
-        FileOutputStream(tmpFile).use { output ->
-          val buffer = ByteArray(8192)
-          var bytesRead: Int
-          while (input.read(buffer).also { bytesRead = it } != -1) {
-            output.write(buffer, 0, bytesRead)
+      try {
+        contentResolver.openInputStream(uri)?.use { input ->
+          FileOutputStream(tmpFile).use { output ->
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            while (input.read(buffer).also { bytesRead = it } != -1) {
+              output.write(buffer, 0, bytesRead)
+            }
           }
+        } ?: run {
+          tmpFile.delete()
+          return null
         }
+        val result = compressImage(tmpFile.absolutePath)
+        tmpFile.delete()
+        result
+      } catch (e: Exception) {
+        tmpFile.delete()
+        throw e
       }
-      val result = compressImage(tmpFile.absolutePath)
-      tmpFile.delete() // 删除原始临时文件
-      result
     } catch (e: Exception) {
       Log.e(TAG, "Failed to resolve image URI: ${e.message}")
       null
@@ -154,9 +163,12 @@ class ChatController(
       FileOutputStream(outFile).use { out ->
         finalBitmap.compress(Bitmap.CompressFormat.JPEG, 80, out)
       }
-      if (finalBitmap != bitmap) finalBitmap.recycle()
+      // 保存尺寸信息后再回收，避免访问已回收 Bitmap 的属性
+      val fw = finalBitmap.width
+      val fh = finalBitmap.height
+      if (finalBitmap != bitmap) finalBitmap.recycle() else bitmap.recycle()
 
-      Log.i(TAG, "Compressed image: ${srcW}x${srcH} → ${finalBitmap.width}x${finalBitmap.height} (${outFile.length() / 1024}KB)")
+      Log.i(TAG, "Compressed image: ${srcW}x${srcH} → ${fw}x${fh} (${outFile.length() / 1024}KB)")
       outFile.absolutePath
     } catch (e: Exception) {
       Log.e(TAG, "Image compression failed: ${e.message}")
@@ -191,7 +203,7 @@ class ChatController(
       role = "user",
       content = trimmed,
     )
-    _messages.value = _messages.value + userMessage
+    _messages.update { it + userMessage }
 
     val memoryLabel = when {
       imagePaths.isNotEmpty() -> "[图片]"
@@ -228,7 +240,7 @@ class ChatController(
           role = "assistant",
           content = "",
         )
-        _messages.value = _messages.value + assistantMessage
+        _messages.update { it + assistantMessage }
 
         val fullResponse = StringBuilder()
         val inferenceFlow = if (imagePaths.isNotEmpty()) {
@@ -304,7 +316,7 @@ class ChatController(
             type = "image",
             attachmentUri = Uri.fromFile(file).toString(),
           )
-          _messages.value = _messages.value + imageMsg
+          _messages.update { it + imageMsg }
         } catch (e: Exception) {
           Log.e(TAG, "Image generation failed: ${e.message}", e)
           _errorText.value = "图片生成失败: ${e.message}"
@@ -317,7 +329,7 @@ class ChatController(
           role = "assistant",
           content = "正在渲染视频「${action.prompt}」，请稍候...",
         )
-        _messages.value = _messages.value + progressMsg
+        _messages.update { it + progressMsg }
         try {
           val videoFile = MultiModalDispatcher.renderVideo(action.prompt)
           if (videoFile.length() == 0L) {
@@ -352,11 +364,15 @@ class ChatController(
       type = "image",
       attachmentUri = imageUri,
     )
-    _messages.value = _messages.value + message
+    _messages.update { it + message }
 
     // 将 content:// URI 转换为文件路径，传给多模态引擎
     val imagePath = resolveImagePath(Uri.parse(imageUri))
-    val imagePaths = listOfNotNull(imagePath)
+    if (imagePath == null) {
+      _errorText.value = "图片处理失败，请检查图片是否过大或格式不支持"
+      return
+    }
+    val imagePaths = listOf(imagePath)
     sendMessage(
       message = caption.ifEmpty { "请描述这张图片" },
       imagePaths = imagePaths,
@@ -371,7 +387,7 @@ class ChatController(
       type = "voice",
       attachmentUri = audioUri,
     )
-    _messages.value = _messages.value + message
+    _messages.update { it + message }
     if (transcript.isNotEmpty()) {
       sendMessage(transcript)
     }
@@ -392,9 +408,19 @@ class ChatController(
       type = "video",
       attachmentUri = videoUri,
     )
-    _messages.value = _messages.value + message
+    _messages.update { it + message }
+
+    // 文件大小检查（> 50MB 拒绝）
+    val fileSize = VideoFrameExtractor.getFileSize(context, Uri.parse(videoUri))
+    if (fileSize > VideoFrameExtractor.MAX_FILE_SIZE) {
+      val sizeMB = fileSize / (1024 * 1024)
+      _errorText.value = "视频文件过大（当前 ${sizeMB} MB，限制 50MB），请选择较短的视频"
+      _isLoading.value = false
+      return
+    }
 
     // 帧采样
+    _errorText.value = null
     val frames = VideoFrameExtractor.extractFrames(context, Uri.parse(videoUri), cacheDir)
     if (frames.isEmpty()) {
       _errorText.value = "视频帧提取失败，请尝试其他视频"
@@ -419,7 +445,7 @@ class ChatController(
   fun clearMessages() {
     currentStreamJob?.cancel()
     currentStreamJob = null
-    _messages.value = emptyList()
+    _messages.update { emptyList() }
     _streamingText.value = null
     _isLoading.value = false
     _errorText.value = null
@@ -433,7 +459,7 @@ class ChatController(
       content = text,
       timestampMs = System.currentTimeMillis(),
     )
-    _messages.value = _messages.value + msg
+    _messages.update { it + msg }
   }
 
   private fun isLoopOutput(text: String): Boolean {

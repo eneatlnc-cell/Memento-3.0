@@ -8,6 +8,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 
@@ -27,14 +30,17 @@ fun OnboardingFlow(
 ) {
   val downloadState by viewModel.downloadState.collectAsState()
   val context = LocalContext.current
+  // 防止重复调用 onComplete
+  var completed by remember { mutableStateOf(false) }
 
   LaunchedEffect(Unit) {
     viewModel.startModelDownload()
   }
 
-  // 下载完成后直接完成引导
+  // 下载完成后直接完成引导（包括后台下载完成后的场景）
   LaunchedEffect(downloadState) {
-    if (downloadState is ModelDownloadState.Completed) {
+    if (downloadState is ModelDownloadState.Completed && !completed) {
+      completed = true
       viewModel.setOnboardingCompleted(true)
       onComplete()
     }
