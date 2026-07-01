@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
+import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.os.Handler
@@ -78,25 +79,40 @@ class HyperFramesRenderer(
     // 3. 逐帧渲染
     val totalFrames = duration * fps
     val encoder = BitmapToVideoEncoder(outputFile, width, height, fps)
-    encoder.start()
 
-    for (frameIndex in 0 until totalFrames) {
-      seekAnimation(wv, frameIndex, fps)
-      delay(16)
-      val bitmap = captureFrame(wv, width, height)
-      if (bitmap != null) {
-        encoder.encodeFrame(bitmap)
-        bitmap.recycle()
+    try {
+      encoder.start()
+
+      for (frameIndex in 0 until totalFrames) {
+        seekAnimation(wv, frameIndex, fps)
+        delay(16)
+        val bitmap = captureFrame(wv, width, height)
+        if (bitmap != null) {
+          encoder.encodeFrame(bitmap)
+          bitmap.recycle()
+        }
+        onProgress?.invoke(frameIndex.toFloat() / totalFrames)
       }
-      onProgress?.invoke(frameIndex.toFloat() / totalFrames)
+
+      onProgress?.invoke(1.0f)
+      Log.i(TAG, "渲染完成: ${outputFile.absolutePath} (${width}x${height}@${fps}fps)")
+    } catch (e: Exception) {
+      Log.e(TAG, "渲染失败: ${e.message}", e)
+    } finally {
+      // 确保无论成功失败都释放资源
+      try {
+        encoder.stop()
+      } catch (e: Exception) {
+        Log.e(TAG, "Encoder stop failed: ${e.message}", e)
+      }
+      try {
+        wv.destroy()
+      } catch (e: Exception) {
+        Log.w(TAG, "WebView destroy failed: ${e.message}")
+      }
+      webView = null
     }
 
-    encoder.stop()
-    wv.destroy()
-    webView = null
-    onProgress?.invoke(1.0f)
-
-    Log.i(TAG, "渲染完成: ${outputFile.absolutePath} (${width}x${height}@${fps}fps)")
     outputFile
   }
 
@@ -276,6 +292,9 @@ window.__timelines = [
 
 /**
  * Bitmap 帧序列 → MP4 视频编码器（MediaCodec 硬件编码）。
+ *
+ * 状态机：UNINITIALIZED → CONFIGURED → STARTED → STOPPED → RELEASED
+ * 防御式设计：每个 release 步骤独立 try-catch，避免单步失败导致资源泄漏。
  */
 class BitmapToVideoEncoder(
   private val outputFile: File,
@@ -283,75 +302,219 @@ class BitmapToVideoEncoder(
   private val height: Int,
   private val fps: Int = 24,
 ) {
+  private enum class State { UNINITIALIZED, CONFIGURED, STARTED, STOPPED, RELEASED }
+
   private var mediaCodec: MediaCodec? = null
   private var mediaMuxer: MediaMuxer? = null
   private var trackIndex: Int = -1
   private var muxerStarted = false
   private var frameIndex = 0L
+  private var state = State.UNINITIALIZED
+  private var codecName: String = "unknown"
 
   fun start() {
-    val format = MediaFormat.createVideoFormat(
-      MediaFormat.MIMETYPE_VIDEO_AVC, width, height
-    ).apply {
+    if (state != State.UNINITIALIZED) {
+      Log.w("BitmapEncoder", "Already started, state=$state")
+      return
+    }
+
+    // 检查编解码器可用性，优先硬解，失败回退软解
+    val mime = MediaFormat.MIMETYPE_VIDEO_AVC
+    val codecInfo = findAvailableCodec(mime, isEncoder = true)
+    if (codecInfo == null) {
+      Log.e("BitmapEncoder", "No available AVC encoder found on this device")
+      throw IllegalStateException("设备不支持 H.264 编码，无法生成视频")
+    }
+    codecName = codecInfo.name
+    Log.i("BitmapEncoder", "Using codec: $codecName")
+
+    val format = MediaFormat.createVideoFormat(mime, width, height).apply {
       setInteger(MediaFormat.KEY_COLOR_FORMAT,
         MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
       setInteger(MediaFormat.KEY_BIT_RATE, 8_000_000)
       setInteger(MediaFormat.KEY_FRAME_RATE, fps)
       setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
     }
-    mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-    mediaCodec!!.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-    mediaCodec!!.start()
-    mediaMuxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+
+    try {
+      mediaCodec = MediaCodec.createByCodecName(codecName)
+      mediaCodec!!.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+      state = State.CONFIGURED
+      mediaCodec!!.start()
+      state = State.STARTED
+      mediaMuxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+    } catch (e: Exception) {
+      Log.e("BitmapEncoder", "Failed to start encoder: ${e.message}", e)
+      safeRelease()
+      throw e
+    }
   }
 
   fun encodeFrame(bitmap: Bitmap) {
+    if (state != State.STARTED) return
     val codec = mediaCodec ?: return
-    val inputBufferIndex = codec.dequeueInputBuffer(10_000)
-    if (inputBufferIndex < 0) return
-    val inputBuffer = codec.getInputBuffer(inputBufferIndex)!!
-    val yuvData = bitmapToYuv420SemiPlanar(bitmap)
-    inputBuffer.clear()
-    inputBuffer.put(yuvData)
-    codec.queueInputBuffer(inputBufferIndex, 0, yuvData.size, frameIndex * 1_000_000 / fps, 0)
-    frameIndex++
-    drainEncoder()
+    try {
+      val inputBufferIndex = codec.dequeueInputBuffer(10_000)
+      if (inputBufferIndex < 0) return
+      val inputBuffer = codec.getInputBuffer(inputBufferIndex) ?: return
+      val yuvData = bitmapToYuv420SemiPlanar(bitmap)
+      inputBuffer.clear()
+      inputBuffer.put(yuvData)
+      codec.queueInputBuffer(inputBufferIndex, 0, yuvData.size, frameIndex * 1_000_000 / fps, 0)
+      frameIndex++
+      drainEncoder()
+    } catch (e: Exception) {
+      Log.e("BitmapEncoder", "encodeFrame failed: ${e.message}", e)
+    }
   }
 
   private fun drainEncoder() {
     val codec = mediaCodec ?: return
     val bufferInfo = MediaCodec.BufferInfo()
-    while (true) {
-      val idx = codec.dequeueOutputBuffer(bufferInfo, 10_000)
-      when {
-        idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-          trackIndex = mediaMuxer!!.addTrack(codec.outputFormat)
-          mediaMuxer!!.start()
-          muxerStarted = true
-        }
-        idx >= 0 -> {
-          val buf = codec.getOutputBuffer(idx)!!
-          if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0
-            && bufferInfo.size > 0 && muxerStarted
-          ) {
-            buf.position(bufferInfo.offset)
-            buf.limit(bufferInfo.offset + bufferInfo.size)
-            mediaMuxer!!.writeSampleData(trackIndex, buf, bufferInfo)
+    try {
+      while (true) {
+        val idx = codec.dequeueOutputBuffer(bufferInfo, 10_000)
+        when {
+          idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+            try {
+              if (muxerStarted) {
+                Log.w("BitmapEncoder", "Unexpected format change after muxer started")
+              }
+              trackIndex = mediaMuxer!!.addTrack(codec.outputFormat)
+              mediaMuxer!!.start()
+              muxerStarted = true
+            } catch (e: Exception) {
+              Log.e("BitmapEncoder", "Muxer addTrack/start failed: ${e.message}", e)
+            }
           }
-          codec.releaseOutputBuffer(idx, false)
+          idx >= 0 -> {
+            try {
+              val buf = codec.getOutputBuffer(idx) ?: continue
+              if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0
+                && bufferInfo.size > 0 && muxerStarted
+              ) {
+                buf.position(bufferInfo.offset)
+                buf.limit(bufferInfo.offset + bufferInfo.size)
+                mediaMuxer!!.writeSampleData(trackIndex, buf, bufferInfo)
+              }
+            } catch (e: Exception) {
+              Log.e("BitmapEncoder", "writeSampleData failed: ${e.message}", e)
+            }
+            codec.releaseOutputBuffer(idx, false)
+          }
+          idx == MediaCodec.INFO_TRY_AGAIN_LATER -> break
         }
-        idx == MediaCodec.INFO_TRY_AGAIN_LATER -> break
       }
+    } catch (e: Exception) {
+      Log.e("BitmapEncoder", "drainEncoder failed: ${e.message}", e)
     }
   }
 
+  /**
+   * 停止编码 — 发送 EOS 信号，等待 codec 完成最后帧输出，然后释放资源。
+   */
   fun stop() {
+    if (state != State.STARTED) {
+      safeRelease()
+      return
+    }
+
+    try {
+      // 发送 EOS（End of Stream）信号，让 codec 完成最后帧编码
+      val codec = mediaCodec
+      if (codec != null) {
+        try {
+          val inputBufferIndex = codec.dequeueInputBuffer(10_000)
+          if (inputBufferIndex >= 0) {
+            codec.queueInputBuffer(
+              inputBufferIndex, 0, 0, 0,
+              MediaCodec.BUFFER_FLAG_END_OF_STREAM
+            )
+          }
+        } catch (e: Exception) {
+          Log.e("BitmapEncoder", "EOS signal failed: ${e.message}", e)
+        }
+        // 等待 EOS 输出
+        drainEncoder()
+      }
+    } catch (e: Exception) {
+      Log.e("BitmapEncoder", "stop drain failed: ${e.message}", e)
+    } finally {
+      state = State.STOPPED
+      safeRelease()
+    }
+  }
+
+  /**
+   * 防御式释放 — 每个步骤独立 try-catch，确保单步失败不影响后续释放。
+   */
+  private fun safeRelease() {
+    if (state == State.RELEASED) return
+
+    // 1. 停止 codec
     try {
       mediaCodec?.stop()
+    } catch (e: IllegalStateException) {
+      // 已处于 released 状态，忽略
+      Log.w("BitmapEncoder", "Codec stop: already released")
+    } catch (e: Exception) {
+      Log.e("BitmapEncoder", "Codec stop failed: ${e.message}", e)
+    }
+
+    // 2. 释放 codec
+    try {
       mediaCodec?.release()
-      mediaMuxer?.stop()
+    } catch (e: Exception) {
+      Log.e("BitmapEncoder", "Codec release failed: ${e.message}", e)
+    }
+    mediaCodec = null
+
+    // 3. 停止 muxer（仅在有数据写入时）
+    try {
+      if (muxerStarted) {
+        mediaMuxer?.stop()
+      }
+    } catch (e: Exception) {
+      Log.e("BitmapEncoder", "Muxer stop failed: ${e.message}", e)
+    }
+
+    // 4. 释放 muxer
+    try {
       mediaMuxer?.release()
-    } catch (_: Exception) {}
+    } catch (e: Exception) {
+      Log.e("BitmapEncoder", "Muxer release failed: ${e.message}", e)
+    }
+    mediaMuxer = null
+
+    state = State.RELEASED
+    Log.i("BitmapEncoder", "Encoder released (codec=$codecName, frames=$frameIndex)")
+  }
+
+  // ── 编解码器查询 ──
+
+  private fun findAvailableCodec(mime: String, isEncoder: Boolean): MediaCodecInfo? {
+    return try {
+      val codecList = MediaCodecList(MediaCodecList.ALL_CODECS)
+      // 优先硬件编解码器
+      val hardware = codecList.codecInfos.filter { info ->
+        info.isEncoder == isEncoder
+          && info.supportedTypes.contains(mime)
+          && !info.name.startsWith("OMX.google.") // 排除软解
+          && !info.name.startsWith("c2.android.") // 排除 Android 软解
+      }
+      // 回退软件编解码器
+      val software = codecList.codecInfos.filter { info ->
+        info.isEncoder == isEncoder
+          && info.supportedTypes.contains(mime)
+          && (info.name.startsWith("OMX.google.") || info.name.startsWith("c2.android."))
+      }
+      (hardware.firstOrNull() ?: software.firstOrNull())?.also {
+        Log.i("BitmapEncoder", "Selected codec: ${it.name} (${if (hardware.contains(it)) "HW" else "SW"})")
+      }
+    } catch (e: Exception) {
+      Log.e("BitmapEncoder", "Codec discovery failed: ${e.message}", e)
+      null
+    }
   }
 
   private fun bitmapToYuv420SemiPlanar(bitmap: Bitmap): ByteArray {
