@@ -130,8 +130,8 @@ fun ChatScreen(
       }
 
       items(messages, key = { it.id }) { message ->
-        // 流式输出中时，隐藏空内容的助手消息（由 StreamingTextBubble 替代显示）
-        if (message.role == "assistant" && message.content.isEmpty() && !streamingText.isNullOrEmpty()) {
+        // 加载中或流式输出中时，隐藏空内容的助手消息（由 TypingIndicator / StreamingTextBubble 替代）
+        if (message.role == "assistant" && message.content.isEmpty() && (isLoading || !streamingText.isNullOrEmpty())) {
           return@items
         }
         MessageBubble(
@@ -158,8 +158,8 @@ fun ChatScreen(
         }
       }
 
-      // 流式文字
-      streamingText?.let { text ->
+      // 流式文字（仅在有内容时显示，避免空字符串渲染空气泡）
+      streamingText?.takeIf { it.isNotEmpty() }?.let { text ->
         item {
           StreamingTextBubble(text = text)
         }

@@ -220,7 +220,7 @@ class ChatController(
 
     _errorText.value = null
     _isLoading.value = true
-    _streamingText.value = ""
+    // streamingText 保持 null，直到首 token 到达才设置，避免空字符串导致三个气泡同时出现
 
     currentStreamJob = scope.launch {
       try {
