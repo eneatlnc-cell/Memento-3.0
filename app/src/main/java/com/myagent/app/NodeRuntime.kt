@@ -50,7 +50,7 @@ class NodeRuntime(
   }
 
   // 聊天控制器
-  val chatController = ChatController(scope, modelLoader, memoryManager, app.cacheDir, app.contentResolver)
+  val chatController = ChatController(scope, modelLoader, memoryManager, app.cacheDir, app.contentResolver, app)
 
   // 主动搭话引擎
   private val proactiveTrigger = ProactiveTrigger()
@@ -149,6 +149,10 @@ class NodeRuntime(
 
   fun sendImage(imageUri: String, caption: String = "") {
     chatController.sendImage(imageUri, caption)
+  }
+
+  fun sendVideo(videoUri: String, caption: String = "") {
+    chatController.sendVideo(videoUri, caption)
   }
 
   fun sendVoice(audioUri: String, transcript: String = "") {

@@ -1,9 +1,10 @@
 package com.myagent.app.multimodal
 
 /**
- * 视频渲染配置 — 用户可选画质预设。
+ * 视频渲染配置 — 用户可选画质预设 + 时长调整。
  *
- * 默认最低画质（省电 + 快速渲染），用户可在设置中切换。
+ * v3.0：视频输出时长默认 5 秒，用户可调 5-15 秒。
+ * 视频输入固定截取前 5 秒（帧采样方案，见 VideoFrameExtractor）。
  */
 data class VideoConfig(
   val width: Int = 854,
@@ -18,6 +19,11 @@ data class VideoConfig(
 
     val PRESETS = listOf(LOW, MEDIUM, HIGH)
     val PRESET_LABELS = listOf("低画质 (480p · 省电)", "标准画质 (720p)", "高画质 (1080p)")
+
+    /** 视频输出时长范围（秒） */
+    const val DURATION_MIN = 5
+    const val DURATION_MAX = 15
+    const val DURATION_STEP = 5
 
     fun fromPresetIndex(index: Int): VideoConfig =
       PRESETS.getOrElse(index) { LOW }

@@ -1,6 +1,7 @@
 package com.myagent.app.chat
 
 import android.content.ContentResolver
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -10,6 +11,7 @@ import com.myagent.app.memory.MemoryManager
 import com.myagent.app.model.LocalModelLoader
 import com.myagent.app.model.PersonaManager
 import com.myagent.app.multimodal.MultiModalDispatcher
+import com.myagent.app.multimodal.VideoFrameExtractor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -32,6 +34,7 @@ class ChatController(
   private val memoryManager: MemoryManager,
   private val cacheDir: File,
   private val contentResolver: ContentResolver,
+  private val context: Context,
 ) {
   companion object {
     private const val TAG = "ChatController"
@@ -372,6 +375,38 @@ class ChatController(
     if (transcript.isNotEmpty()) {
       sendMessage(transcript)
     }
+  }
+
+  /**
+   * 视频输入 — 帧采样后作为多张图片传给 E4B。
+   *
+   * LiteRT-LM 未暴露 Content.VideoFile 类型，采用帧采样替代方案：
+   * MediaMetadataRetriever 提取前 5 秒的关键帧（每秒 3 帧），
+   * 压缩为 JPEG 后作为 imagePaths 列表传给多模态引擎。
+   */
+  fun sendVideo(videoUri: String, caption: String = "") {
+    val message = ChatMessage(
+      id = UUID.randomUUID().toString(),
+      role = "user",
+      content = caption.ifEmpty { "视频" },
+      type = "video",
+      attachmentUri = videoUri,
+    )
+    _messages.value = _messages.value + message
+
+    // 帧采样
+    val frames = VideoFrameExtractor.extractFrames(context, Uri.parse(videoUri), cacheDir)
+    if (frames.isEmpty()) {
+      _errorText.value = "视频帧提取失败，请尝试其他视频"
+      _isLoading.value = false
+      return
+    }
+
+    Log.i(TAG, "Video input: extracted ${frames.size} frames")
+    sendMessage(
+      message = caption.ifEmpty { "请描述这个视频的内容" },
+      imagePaths = frames,
+    )
   }
 
   fun abort() {

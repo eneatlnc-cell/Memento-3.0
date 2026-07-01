@@ -24,15 +24,19 @@ import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -217,7 +221,7 @@ private fun SettingsRow(
 
 private fun videoConfigLabel(config: VideoConfig): String {
   val presetIndex = VideoConfig.PRESETS.indexOfFirst {
-    it.width == config.width && it.height == config.height && it.fps == config.fps
+    it.width == config.width && it.height == config.height
   }
   return if (presetIndex >= 0) {
     VideoConfig.PRESET_LABELS[presetIndex]
@@ -232,25 +236,54 @@ private fun VideoConfigDialog(
   onSelect: (VideoConfig) -> Unit,
   onDismiss: () -> Unit,
 ) {
+  var selectedPresetIndex by remember {
+    mutableIntStateOf(
+      VideoConfig.PRESETS.indexOfFirst {
+        it.width == currentConfig.width && it.height == currentConfig.height
+      }.coerceAtLeast(0)
+    )
+  }
+  var durationSeconds by remember { mutableIntStateOf(currentConfig.maxDuration) }
+
   AlertDialog(
     onDismissRequest = onDismiss,
     title = { Text("视频画质") },
     text = {
       Column {
+        Text("分辨率", style = MaterialTheme.typography.labelMedium)
+        Spacer(modifier = Modifier.height(4.dp))
         VideoConfig.PRESETS.forEachIndexed { index, config ->
-          val isSelected = config.width == currentConfig.width &&
-            config.height == currentConfig.height &&
-            config.fps == currentConfig.fps
+          val isSelected = index == selectedPresetIndex
           SelectableRow(
             label = VideoConfig.PRESET_LABELS[index],
-            detail = "${config.width}×${config.height} · ${config.fps}fps · 最长${config.maxDuration}s",
+            detail = "${config.width}×${config.height} · ${config.fps}fps",
             selected = isSelected,
-            onClick = { onSelect(config) },
+            onClick = { selectedPresetIndex = index },
           )
         }
+
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+          "视频时长：${durationSeconds} 秒",
+          style = MaterialTheme.typography.labelMedium,
+        )
+        Slider(
+          value = durationSeconds.toFloat(),
+          onValueChange = { durationSeconds = it.toInt() },
+          valueRange = VideoConfig.DURATION_MIN.toFloat()..VideoConfig.DURATION_MAX.toFloat(),
+          steps = (VideoConfig.DURATION_MAX - VideoConfig.DURATION_MIN) / VideoConfig.DURATION_STEP - 1,
+          modifier = Modifier.fillMaxWidth(),
+        )
       }
     },
     confirmButton = {
+      TextButton(onClick = {
+        val preset = VideoConfig.PRESETS[selectedPresetIndex]
+        onSelect(preset.copy(maxDuration = durationSeconds))
+        onDismiss()
+      }) { Text("确定") }
+    },
+    dismissButton = {
       TextButton(onClick = onDismiss) { Text("取消") }
     },
   )

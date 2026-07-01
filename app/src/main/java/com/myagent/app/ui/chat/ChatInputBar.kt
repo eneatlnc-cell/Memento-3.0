@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -30,14 +31,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import java.io.File
 
 /**
- * 多模态输入栏 — 语音 / 图片 / 文本 / 发送。
+ * 多模态输入栏 — 语音 / 图片 / 视频 / 文本 / 发送。
  *
  * 状态管理完全内聚，通过回调向上传递用户意图。
  */
@@ -46,6 +46,7 @@ fun ChatInputBar(
   isLoading: Boolean,
   onSendText: (String) -> Unit,
   onSendImage: (Uri) -> Unit,
+  onSendVideo: (Uri) -> Unit,
   onSendVoice: (Uri) -> Unit,
   onAbort: () -> Unit,
   modifier: Modifier = Modifier,
@@ -73,6 +74,13 @@ fun ChatInputBar(
     contract = ActivityResultContracts.GetContent()
   ) { uri: Uri? ->
     uri?.let { onSendImage(it) }
+  }
+
+  // --- 视频选择器 ---
+  val videoPicker = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.GetContent()
+  ) { uri: Uri? ->
+    uri?.let { onSendVideo(it) }
   }
 
   Row(
@@ -114,7 +122,7 @@ fun ChatInputBar(
       )
     }
 
-    // 图片入口 — 加载中禁用，防止多模态输入与推理冲突导致闪退
+    // 图片入口 — 加载中禁用
     IconButton(
       onClick = { if (!isLoading) imagePicker.launch("image/*") },
       modifier = Modifier.size(44.dp),
@@ -123,6 +131,20 @@ fun ChatInputBar(
       Icon(
         imageVector = Icons.Default.Image,
         contentDescription = "图片输入",
+        tint = if (isLoading) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+        else MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+
+    // 视频入口 — 加载中禁用
+    IconButton(
+      onClick = { if (!isLoading) videoPicker.launch("video/*") },
+      modifier = Modifier.size(44.dp),
+      enabled = !isLoading,
+    ) {
+      Icon(
+        imageVector = Icons.Default.Videocam,
+        contentDescription = "视频输入",
         tint = if (isLoading) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
         else MaterialTheme.colorScheme.onSurfaceVariant,
       )

@@ -158,6 +158,10 @@ class MainViewModel(
     ensureRuntime().sendImage(uri.toString(), caption)
   }
 
+  fun sendVideo(uri: Uri, caption: String = "") {
+    ensureRuntime().sendVideo(uri.toString(), caption)
+  }
+
   fun sendVoice(uri: Uri, transcript: String = "") {
     ensureRuntime().sendVoice(uri.toString(), transcript)
   }
