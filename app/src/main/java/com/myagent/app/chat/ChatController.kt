@@ -21,21 +21,14 @@ import java.io.FileOutputStream
 import java.util.UUID
 
 /**
- * 聊天控制器 — 协调 LocalModelLoader、MemoryManager、PersonaManager、MultiModalDispatcher。
+ * 聊天控制器 — 协调 LocalModelLoader、MemoryManager、MultiModalDispatcher。
  *
- * v2.0 多模态路由：
- * LLM 回复中携带 [GEN_IMAGE:主题] 或 [GEN_VIDEO:主题] 标记时，
- * 自动调用 MultiModalDispatcher 生成图片/视频，追加到消息列表。
- *
- * v2.1 多模态输入：
- * 用户发送图片时，将图片路径通过 Content.ImageFile 传给 LiteRT-LM Conversation，
- * Gemma 4 原生视觉编码器解析图片，LLM 真正"看到"图片内容。
+ * v3.0 移除人格框架：原始记忆由 PersonaManager 单例提供，不再注入。
  */
 class ChatController(
   private val scope: CoroutineScope,
   private val modelLoader: LocalModelLoader,
   private val memoryManager: MemoryManager,
-  private val personaManager: PersonaManager,
   private val cacheDir: File,
   private val contentResolver: ContentResolver,
 ) {
@@ -161,7 +154,7 @@ class ChatController(
 
     currentStreamJob = scope.launch {
       try {
-        val systemPrompt = personaManager.getSystemPrompt()
+        val systemPrompt = PersonaManager.getSystemPrompt()
         val memoryContext = memoryManager.getFullContext()
         val promptText = trimmed.ifEmpty { "请描述这张图片" }
 

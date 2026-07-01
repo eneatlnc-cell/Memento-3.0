@@ -6,8 +6,6 @@ import com.myagent.app.chat.OutgoingAttachment
 import com.myagent.app.memory.MemoryManager
 import com.myagent.app.model.LocalModelLoader
 import com.myagent.app.model.ModelDownloadState
-import com.myagent.app.model.PersonaManager
-import com.myagent.app.model.PersonaType
 import com.myagent.app.multimodal.MultiModalDispatcher
 import com.myagent.app.multimodal.VideoConfig
 import com.myagent.app.proactive.ProactiveTrigger
@@ -30,7 +28,6 @@ class NodeRuntime(
   private val app: NodeApp,
   private val prefs: SecurePrefs,
   private val memoryManager: MemoryManager,
-  private val personaManager: PersonaManager,
 ) {
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -53,7 +50,7 @@ class NodeRuntime(
   }
 
   // 聊天控制器
-  val chatController = ChatController(scope, modelLoader, memoryManager, personaManager, app.cacheDir, app.contentResolver)
+  val chatController = ChatController(scope, modelLoader, memoryManager, app.cacheDir, app.contentResolver)
 
   // 主动搭话引擎
   private val proactiveTrigger = ProactiveTrigger()
@@ -118,11 +115,6 @@ class NodeRuntime(
   val chatLoading: StateFlow<Boolean> = chatController.isLoading
   val chatError: StateFlow<String?> = chatController.errorText
 
-  // 人格
-  val currentPersona: StateFlow<PersonaType> = personaManager.currentPersona
-  private val _personaSelected = MutableStateFlow(personaManager.isPersonaSelected)
-  val personaSelected: StateFlow<Boolean> = _personaSelected.asStateFlow()
-
   // 外观
   val appearanceThemeMode: StateFlow<AppearanceThemeMode> = prefs.appearanceThemeMode
 
@@ -149,14 +141,6 @@ class NodeRuntime(
 
   fun setForeground(value: Boolean) {
     // v2.0 本地推理，无需特殊处理
-  }
-
-  fun lockPersona(type: PersonaType): Boolean {
-    val result = personaManager.lockPersona(type)
-    if (result) {
-      _personaSelected.value = true
-    }
-    return result
   }
 
   fun sendChat(message: String, attachments: List<OutgoingAttachment> = emptyList()) {
@@ -208,9 +192,8 @@ class NodeRuntime(
 
   /** 检查是否需要主动搭话（App 启动时调用） */
   fun checkProactive(isAppLaunch: Boolean = false): String? {
-    val persona = personaManager.currentPersona.value
     if (!proactiveTrigger.shouldTrigger(lastInteractionMs, isAppLaunch)) return null
-    val message = proactiveTrigger.getProactiveMessage(persona)
+    val message = proactiveTrigger.getProactiveMessage()
     // 搭话前更新交互时间，避免短时间内重复触发
     lastInteractionMs = System.currentTimeMillis()
     return message

@@ -6,11 +6,10 @@ import android.os.StrictMode
 import com.myagent.app.activation.ActivationManager
 import com.myagent.app.memory.MemoryManager
 import com.myagent.app.model.ModelInstaller
-import com.myagent.app.model.PersonaManager
 import com.myagent.app.multimodal.MultiModalDispatcher
 
 /**
- * Android Application 单例 — 持有全局 SecurePrefs、MemoryManager、PersonaManager、ActivationManager。
+ * Android Application 单例 — 持有全局 SecurePrefs、MemoryManager、ActivationManager。
  *
  * 内存管理：
  * - 注册 ComponentCallbacks2 监听系统内存压力
@@ -20,7 +19,6 @@ import com.myagent.app.multimodal.MultiModalDispatcher
 class NodeApp : Application() {
   val prefs: SecurePrefs by lazy { SecurePrefs(this) }
   val memoryManager: MemoryManager by lazy { MemoryManager(this) }
-  val personaManager: PersonaManager by lazy { PersonaManager(this) }
   val activationManager: ActivationManager by lazy { ActivationManager(this) }
   val modelInstaller: ModelInstaller by lazy { ModelInstaller(this, activationManager) }
 
@@ -32,7 +30,7 @@ class NodeApp : Application() {
   fun ensureRuntime(): NodeRuntime {
     runtimeInstance?.let { return it }
     return synchronized(this) {
-      runtimeInstance ?: NodeRuntime(this, prefs, memoryManager, personaManager).also { runtimeInstance = it }
+      runtimeInstance ?: NodeRuntime(this, prefs, memoryManager).also { runtimeInstance = it }
     }
   }
 

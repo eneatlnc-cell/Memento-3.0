@@ -4,7 +4,6 @@ import com.myagent.app.activation.ActivationManager
 import com.myagent.app.chat.ChatMessage
 import com.myagent.app.chat.OutgoingAttachment
 import com.myagent.app.model.ModelDownloadState
-import com.myagent.app.model.PersonaType
 import com.myagent.app.multimodal.VideoConfig
 import android.app.Application
 import android.graphics.Bitmap
@@ -76,10 +75,6 @@ class MainViewModel(
   val chatStreamingText: StateFlow<String?> = runtimeState(null) { it.chatStreamingText }
   val chatLoading: StateFlow<Boolean> = runtimeState(false) { it.chatLoading }
   val chatError: StateFlow<String?> = runtimeState(null) { it.chatError }
-
-  // --- 人格 ---
-  val currentPersona: StateFlow<PersonaType> = runtimeState(PersonaType.FUNNY) { it.currentPersona }
-  val personaSelected: StateFlow<Boolean> = runtimeState(false) { it.personaSelected }
 
   // --- 外观 ---
   val appearanceThemeMode: StateFlow<AppearanceThemeMode> = prefs.appearanceThemeMode
@@ -173,11 +168,6 @@ class MainViewModel(
 
   fun clearChat() {
     ensureRuntime().clearChat()
-  }
-
-  // --- 人格操作（仪式感锁定） ---
-  fun lockPersona(type: PersonaType): Boolean {
-    return ensureRuntime().lockPersona(type)
   }
 
   // --- 视频画质 ---

@@ -3,7 +3,6 @@ package com.myagent.app.ui
 import com.myagent.app.AppearanceThemeMode
 import com.myagent.app.MainViewModel
 import com.myagent.app.model.ModelDownloadState
-import com.myagent.app.model.PersonaType
 import com.myagent.app.multimodal.VideoConfig
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
@@ -20,9 +19,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Palette
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -53,10 +50,7 @@ import androidx.compose.ui.unit.dp
 fun SettingsScreen(
   viewModel: MainViewModel,
   modifier: Modifier = Modifier,
-  onRequestPersonaSelection: () -> Unit = {},
 ) {
-  val currentPersona by viewModel.currentPersona.collectAsState()
-  val personaSelected by viewModel.personaSelected.collectAsState()
   val appearanceMode by viewModel.appearanceThemeMode.collectAsState()
   val downloadState by viewModel.downloadState.collectAsState()
   val videoConfig by viewModel.videoConfig.collectAsState()
@@ -74,13 +68,6 @@ fun SettingsScreen(
       text = "设置",
       style = MaterialTheme.typography.headlineMedium,
       modifier = Modifier.padding(bottom = 16.dp),
-    )
-
-    // ── 人格设置 ──
-    PersonaSection(
-      personaSelected = personaSelected,
-      currentPersona = currentPersona,
-      onRequestPersonaSelection = onRequestPersonaSelection,
     )
 
     HorizontalDivider()
@@ -185,54 +172,6 @@ fun SettingsScreen(
       },
       onDismiss = { showDataDialog = false },
     )
-  }
-}
-
-// ── 人格区域 ──
-
-@Composable
-private fun PersonaSection(
-  personaSelected: Boolean,
-  currentPersona: PersonaType,
-  onRequestPersonaSelection: () -> Unit,
-) {
-  if (personaSelected) {
-    PersonaLockedRow(currentPersona = currentPersona)
-  } else {
-    SettingsRow(
-      icon = Icons.Default.Person,
-      title = "选择人格",
-      subtitle = "当前：${currentPersona.displayName}（默认，可更改）",
-      onClick = onRequestPersonaSelection,
-    )
-  }
-}
-
-@Composable
-private fun PersonaLockedRow(currentPersona: PersonaType) {
-  Row(
-    modifier = Modifier
-      .fillMaxWidth()
-      .padding(vertical = 16.dp, horizontal = 4.dp),
-    verticalAlignment = Alignment.CenterVertically,
-  ) {
-    Icon(
-      imageVector = Icons.Default.Lock,
-      contentDescription = null,
-      tint = Color(0xFF6C5CE7),
-    )
-    Spacer(modifier = Modifier.width(16.dp))
-    Column(modifier = Modifier.weight(1f)) {
-      Text(
-        text = "AI 人格",
-        style = MaterialTheme.typography.bodyLarge,
-      )
-      Text(
-        text = "${currentPersona.emoji} ${currentPersona.displayName}（已锁定，终身有效）",
-        style = MaterialTheme.typography.bodyMedium,
-        color = Color(0xFF6C5CE7),
-      )
-    }
   }
 }
 
