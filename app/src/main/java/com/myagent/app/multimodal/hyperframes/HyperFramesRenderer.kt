@@ -61,8 +61,8 @@ class HyperFramesRenderer(
     fps: Int = DEFAULT_FPS,
     onProgress: ((Float) -> Unit)? = null,
   ): File = withContext(Dispatchers.Main) {
-    val cacheDir = File(app.cacheDir, "hyperframes").also { it.mkdirs() }
-    val outputFile = File(cacheDir, "hf_${System.currentTimeMillis()}.mp4")
+    val videoDir = File(app.getExternalFilesDir(null), "hyperframes").also { it.mkdirs() }
+    val outputFile = File(videoDir, "hf_${System.currentTimeMillis()}.mp4")
 
     // 1. 创建 WebView
     val wv = createWebView(width, height)

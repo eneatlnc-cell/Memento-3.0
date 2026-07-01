@@ -281,16 +281,32 @@ private suspend fun playTts(
     val wav = withContext(Dispatchers.Default) {
       viewModel.synthesizeSpeech(text)
     }
+    if (wav.isEmpty()) {
+      android.widget.Toast.makeText(context, "无法播放语音", android.widget.Toast.LENGTH_SHORT).show()
+      return
+    }
     val tmp = File(context.cacheDir, "tts_${messageId}.wav")
     FileOutputStream(tmp).use { it.write(wav) }
     withContext(Dispatchers.Main) {
       val mp = MediaPlayer()
-      mp.setDataSource(tmp.absolutePath)
-      mp.prepare()
-      mp.start()
-      mp.setOnCompletionListener { it.release() }
+      try {
+        mp.setDataSource(tmp.absolutePath)
+        mp.setOnPreparedListener { it.start() }
+        mp.setOnCompletionListener { it.release() }
+        mp.setOnErrorListener { _, _, _ ->
+          mp.release()
+          android.widget.Toast.makeText(context, "无法播放语音", android.widget.Toast.LENGTH_SHORT).show()
+          true
+        }
+        mp.prepareAsync()
+      } catch (e: Exception) {
+        mp.release()
+        android.widget.Toast.makeText(context, "无法播放语音", android.widget.Toast.LENGTH_SHORT).show()
+      }
     }
-  } catch (_: Exception) {
-    // TTS 播放失败，静默忽略
+  } catch (e: Exception) {
+    withContext(Dispatchers.Main) {
+      android.widget.Toast.makeText(context, "无法播放语音", android.widget.Toast.LENGTH_SHORT).show()
+    }
   }
 }

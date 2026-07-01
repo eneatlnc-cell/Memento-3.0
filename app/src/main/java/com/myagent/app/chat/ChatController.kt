@@ -2,6 +2,7 @@ package com.myagent.app.chat
 
 import android.content.ContentResolver
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
@@ -74,29 +75,27 @@ class ChatController(
   // ── URI → 文件路径 ──
 
   /**
-   * 将 content:// URI 复制到缓存目录，返回绝对文件路径。
+   * 将 content:// URI 复制到缓存目录，压缩后返回绝对文件路径。
    * 图片传给 LiteRT-LM 需要绝对路径（Content.ImageFile）。
+   * 压缩至最大 1024x1024，JPEG 质量 80%，避免 E4B 视觉编码器处理失败。
    * 限制单张图片最大 50MB，防止 OOM。
    */
   private fun resolveImagePath(uri: Uri): String? {
     return try {
-      // 如果已经是 file:// 路径，直接返回
       if (uri.scheme == "file") {
-        return uri.path
+        return compressImage(uri.path ?: return null)
       }
 
-      // 检查文件大小，超过 50MB 拒绝处理
       val size = contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1
       if (size > 50 * 1024 * 1024) {
         Log.w(TAG, "Image too large: ${size / 1024 / 1024}MB, max 50MB")
         return null
       }
 
-      // content:// URI → 缓冲复制到缓存
-      val ext = uri.getExtension() ?: "jpg"
-      val file = File(cacheDir, "img_${UUID.randomUUID()}.$ext")
+      // 先复制到临时文件
+      val tmpFile = File(cacheDir, "img_raw_${UUID.randomUUID()}")
       contentResolver.openInputStream(uri)?.use { input ->
-        FileOutputStream(file).use { output ->
+        FileOutputStream(tmpFile).use { output ->
           val buffer = ByteArray(8192)
           var bytesRead: Int
           while (input.read(buffer).also { bytesRead = it } != -1) {
@@ -104,10 +103,60 @@ class ChatController(
           }
         }
       }
-      Log.i(TAG, "Resolved image URI to: ${file.absolutePath} (${file.length() / 1024}KB)")
-      file.absolutePath
+      val result = compressImage(tmpFile.absolutePath)
+      tmpFile.delete() // 删除原始临时文件
+      result
     } catch (e: Exception) {
       Log.e(TAG, "Failed to resolve image URI: ${e.message}")
+      null
+    }
+  }
+
+  /**
+   * 压缩图片至最大 1024x1024，JPEG 质量 80%。
+   * 返回压缩后文件的绝对路径。
+   */
+  private fun compressImage(inputPath: String): String? {
+    return try {
+      val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+      BitmapFactory.decodeFile(inputPath, options)
+      val srcW = options.outWidth
+      val srcH = options.outHeight
+      if (srcW <= 0 || srcH <= 0) return null
+
+      val maxDim = 1024
+      // inSampleSize 必须是 2 的幂，取不小于所需缩放倍数的 2 的幂
+      val sampleSize = if (srcW > maxDim || srcH > maxDim) {
+        var s = 1
+        val scale = maxOf(srcW.toFloat() / maxDim, srcH.toFloat() / maxDim)
+        while (s < scale) s *= 2
+        s
+      } else 1
+
+      val opts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+      val bitmap = BitmapFactory.decodeFile(inputPath, opts) ?: return null
+
+      // 如果解码后尺寸仍超过 1024，再等比缩放
+      val finalBitmap = if (bitmap.width > maxDim || bitmap.height > maxDim) {
+        val ratio = minOf(maxDim.toFloat() / bitmap.width, maxDim.toFloat() / bitmap.height)
+        Bitmap.createScaledBitmap(
+          bitmap,
+          (bitmap.width * ratio).toInt(),
+          (bitmap.height * ratio).toInt(),
+          true,
+        ).also { if (it != bitmap) bitmap.recycle() }
+      } else bitmap
+
+      val outFile = File(cacheDir, "img_${UUID.randomUUID()}.jpg")
+      FileOutputStream(outFile).use { out ->
+        finalBitmap.compress(Bitmap.CompressFormat.JPEG, 80, out)
+      }
+      if (finalBitmap != bitmap) finalBitmap.recycle()
+
+      Log.i(TAG, "Compressed image: ${srcW}x${srcH} → ${finalBitmap.width}x${finalBitmap.height} (${outFile.length() / 1024}KB)")
+      outFile.absolutePath
+    } catch (e: Exception) {
+      Log.e(TAG, "Image compression failed: ${e.message}")
       null
     }
   }
@@ -244,6 +293,7 @@ class ChatController(
           val bitmap = MultiModalDispatcher.generateImage(action.prompt)
           val file = File(cacheDir, "gen_${UUID.randomUUID()}.png")
           FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+          Log.i(TAG, "Generated image saved: ${file.absolutePath} (${file.length() / 1024}KB)")
           val imageMsg = ChatMessage(
             id = UUID.randomUUID().toString(),
             role = "assistant",
@@ -253,6 +303,7 @@ class ChatController(
           )
           _messages.value = _messages.value + imageMsg
         } catch (e: Exception) {
+          Log.e(TAG, "Image generation failed: ${e.message}", e)
           _errorText.value = "图片生成失败: ${e.message}"
         }
       }
@@ -266,6 +317,10 @@ class ChatController(
         _messages.value = _messages.value + progressMsg
         try {
           val videoFile = MultiModalDispatcher.renderVideo(action.prompt)
+          if (videoFile.length() == 0L) {
+            throw Exception("视频文件为空，渲染可能超时")
+          }
+          Log.i(TAG, "Generated video saved: ${videoFile.absolutePath} (${videoFile.length() / 1024}KB)")
           val videoMsg = ChatMessage(
             id = UUID.randomUUID().toString(),
             role = "assistant",
@@ -277,6 +332,7 @@ class ChatController(
             if (it.id == progressId) videoMsg else it
           }
         } catch (e: Exception) {
+          Log.e(TAG, "Video generation failed: ${e.message}", e)
           _messages.value = _messages.value.map {
             if (it.id == progressId) it.copy(content = "视频生成失败: ${e.message}") else it
           }
