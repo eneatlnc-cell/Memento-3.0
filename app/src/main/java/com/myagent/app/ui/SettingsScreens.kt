@@ -2,7 +2,6 @@ package com.myagent.app.ui
 
 import com.myagent.app.AppearanceThemeMode
 import com.myagent.app.MainViewModel
-import com.myagent.app.SkinMode
 import com.myagent.app.model.ModelDownloadState
 import com.myagent.app.model.PersonaType
 import com.myagent.app.multimodal.VideoConfig
@@ -24,7 +23,6 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Style
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -60,11 +58,9 @@ fun SettingsScreen(
   val currentPersona by viewModel.currentPersona.collectAsState()
   val personaSelected by viewModel.personaSelected.collectAsState()
   val appearanceMode by viewModel.appearanceThemeMode.collectAsState()
-  val skinMode by viewModel.skinMode.collectAsState()
   val downloadState by viewModel.downloadState.collectAsState()
   val videoConfig by viewModel.videoConfig.collectAsState()
   var showAppearanceDialog by remember { mutableStateOf(false) }
-  var showSkinDialog by remember { mutableStateOf(false) }
   var showVideoDialog by remember { mutableStateOf(false) }
   var showDataDialog by remember { mutableStateOf(false) }
   var showAboutDialog by remember { mutableStateOf(false) }
@@ -105,16 +101,6 @@ fun SettingsScreen(
       title = "关于 Memento",
       subtitle = "版本 2.0.0",
       onClick = { showAboutDialog = true },
-    )
-
-    HorizontalDivider()
-
-    // ── 皮肤选择 ──
-    SettingsRow(
-      icon = Icons.Default.Style,
-      title = "皮肤",
-      subtitle = "${skinMode.emoji} ${skinMode.displayName}",
-      onClick = { showSkinDialog = true },
     )
 
     HorizontalDivider()
@@ -167,17 +153,6 @@ fun SettingsScreen(
         showAppearanceDialog = false
       },
       onDismiss = { showAppearanceDialog = false },
-    )
-  }
-
-  if (showSkinDialog) {
-    SkinDialog(
-      currentSkin = skinMode,
-      onSelect = {
-        viewModel.setSkinMode(it)
-        showSkinDialog = false
-      },
-      onDismiss = { showSkinDialog = false },
     )
   }
 
@@ -382,13 +357,6 @@ private fun AboutDialog(
           style = MaterialTheme.typography.bodyMedium,
           color = MaterialTheme.colorScheme.primary,
           modifier = Modifier.clickable { /* TODO: 打开用户协议链接 */ },
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-          text = "开源许可",
-          style = MaterialTheme.typography.bodyMedium,
-          color = MaterialTheme.colorScheme.primary,
-          modifier = Modifier.clickable { /* TODO: 打开开源许可页面 */ },
         )
         Spacer(modifier = Modifier.height(16.dp))
         Text(
@@ -606,33 +574,4 @@ private fun DownloadSection(
     }
   }
   HorizontalDivider()
-}
-
-// ── 皮肤选择弹窗 ──
-
-@Composable
-private fun SkinDialog(
-  currentSkin: SkinMode,
-  onSelect: (SkinMode) -> Unit,
-  onDismiss: () -> Unit,
-) {
-  AlertDialog(
-    onDismissRequest = onDismiss,
-    title = { Text("选择皮肤") },
-    text = {
-      Column {
-        for (skin in SkinMode.entries) {
-          SelectableRow(
-            label = "${skin.emoji} ${skin.displayName}",
-            detail = skin.description,
-            selected = skin == currentSkin,
-            onClick = { onSelect(skin) },
-          )
-        }
-      }
-    },
-    confirmButton = {
-      TextButton(onClick = onDismiss) { Text("取消") }
-    },
-  )
 }

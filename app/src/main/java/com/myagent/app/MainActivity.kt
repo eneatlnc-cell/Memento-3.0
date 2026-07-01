@@ -24,8 +24,7 @@ class MainActivity : ComponentActivity() {
 
     setContent {
       val appearanceThemeMode by viewModel.appearanceThemeMode.collectAsState()
-      val skinMode by viewModel.skinMode.collectAsState()
-      MementoTheme(themeMode = appearanceThemeMode, skin = skinMode) {
+      MementoTheme(themeMode = appearanceThemeMode) {
         RootScreen(viewModel = viewModel)
       }
     }

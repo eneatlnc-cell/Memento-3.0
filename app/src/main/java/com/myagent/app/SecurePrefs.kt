@@ -17,7 +17,6 @@ class SecurePrefs(context: Context) {
     private const val plainPrefsName = "lingji.v2"
     private const val displayNameKey = "node.displayName"
     private const val appearanceThemeModeKey = "appearance.themeMode"
-    private const val skinModeKey = "appearance.skinMode"
     private const val onboardingCompletedKey = "onboarding.completed"
     private const val welcomeCompletedKey = "welcome.completed"
     private const val instanceIdKey = "node.instanceId"
@@ -69,17 +68,6 @@ class SecurePrefs(context: Context) {
   fun setAppearanceThemeMode(mode: AppearanceThemeMode) {
     plainPrefs.edit { putString(appearanceThemeModeKey, mode.rawValue) }
     _appearanceThemeMode.value = mode
-  }
-
-  // --- Skin Mode ---
-  private val _skinMode = MutableStateFlow(
-    SkinMode.fromRawValue(plainPrefs.getString(skinModeKey, null)),
-  )
-  val skinMode: StateFlow<SkinMode> = _skinMode
-
-  fun setSkinMode(mode: SkinMode) {
-    plainPrefs.edit { putString(skinModeKey, mode.rawValue) }
-    _skinMode.value = mode
   }
 
   // --- Onboarding ---
