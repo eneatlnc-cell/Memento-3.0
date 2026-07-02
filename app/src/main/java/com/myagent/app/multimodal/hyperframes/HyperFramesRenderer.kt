@@ -25,6 +25,7 @@ import android.widget.FrameLayout
 import kotlinx.coroutines.*
 import java.io.File
 import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 
 /**
  * HyperFrames 端侧视频渲染器 — WebView + MediaCodec。
@@ -92,8 +93,8 @@ class HyperFramesRenderer(
       return@withContext outputFile
     }
 
-    // 等 WebView 完成首次布局和绘制
-    delay(500)
+    // 等 WebView 完成首次布局和绘制（挂窗后需要更长时间完成首帧）
+    delay(1000)
 
     // 3. 逐帧渲染
     val totalFrames = duration * fps
@@ -103,14 +104,18 @@ class HyperFramesRenderer(
       encoder.start()
 
       for (frameIndex in 0 until totalFrames) {
+        // 同步 seek：等待 JS evaluateJavascript 回调完成
         seekAnimation(wv, frameIndex, fps)
-        delay(16) // 等一帧时间让 WebView 处理 JS 动画
+        // JS 已执行完毕，给 WebView 一帧时间完成布局
+        delay(33)
         val bitmap = captureFrame(wv, width, height)
         if (bitmap != null) {
           withContext(Dispatchers.Default) {
             encoder.encodeFrame(bitmap)
           }
           bitmap.recycle()
+        } else {
+          Log.w(TAG, "captureFrame returned null at frame $frameIndex")
         }
         onProgress?.invoke(frameIndex.toFloat() / totalFrames)
       }
@@ -194,6 +199,9 @@ class HyperFramesRenderer(
       wm.addView(c, params)
       windowAttached = true
       Log.d(TAG, "WebView attached to window")
+      // 挂窗后切软件层：硬件加速 WebView 的 draw(Canvas) 无法捕获文字/图形，
+      // 必须先挂窗获得 ViewRootImpl，再切软件层，两者缺一不可
+      wv.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
     } catch (e: SecurityException) {
       Log.w(TAG, "WindowManager.addView denied: ${e.message}, fallback to software")
       windowAttached = false
@@ -272,18 +280,29 @@ class HyperFramesRenderer(
     }
   }
 
-  private fun seekAnimation(wv: WebView, frameIndex: Int, fps: Int) {
+  /**
+   * 同步 seek 动画到指定帧 — 等待 evaluateJavascript 回调完成后返回。
+   *
+   * 修复 v2.2：evaluateJavascript 是异步的，之前用 delay(16) 猜测等待时间，
+   * 在低端设备上 JS 未执行完就截图，导致每帧都是 opacity:0 的初始状态。
+   * 现在用 suspendCancellableCoroutine 等待回调，确保 JS 执行完毕。
+   */
+  private suspend fun seekAnimation(wv: WebView, frameIndex: Int, fps: Int) {
     val timeInSeconds = frameIndex.toFloat() / fps
-    wv.evaluateJavascript("""
-      (function() {
-        if (window.__timelines) {
-          window.__timelines.forEach(function(tl) {
-            tl.pause();
-            tl.seek($timeInSeconds);
-          });
-        }
-      })();
-    """.trimIndent(), null)
+    suspendCoroutine<Unit> { cont ->
+      wv.evaluateJavascript("""
+        (function() {
+          if (window.__timelines) {
+            window.__timelines.forEach(function(tl) {
+              tl.pause();
+              tl.seek($timeInSeconds);
+            });
+          }
+        })();
+      """.trimIndent()) { _ ->
+        cont.resume(Unit)
+      }
+    }
   }
 
   /**
@@ -322,7 +341,7 @@ body {
   width:${width}px; height:${height}px;
   background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
   overflow:hidden;
-  font-family: -apple-system, 'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: sans-serif;
 }
 #stage { width:${width}px; height:${height}px; position:relative; display:flex;
   align-items:center; justify-content:center; flex-direction:column; }

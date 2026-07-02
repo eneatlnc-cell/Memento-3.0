@@ -66,8 +66,8 @@ class DreamLiteImageGenerator(
     val html = generateHtmlForImage(prompt, style, DEFAULT_WIDTH, DEFAULT_HEIGHT)
     val wv = getOrCreateWebView(DEFAULT_WIDTH, DEFAULT_HEIGHT)
     loadHtmlAndWait(wv, html)
-    // onPageFinished 后仍需等 WebView 完成布局 + 首次绘制
-    delay(800)
+    // onPageFinished 后仍需等 WebView 完成布局 + 首次绘制（挂窗后需要更长时间）
+    delay(1200)
     val bitmap = captureFrame(wv, DEFAULT_WIDTH, DEFAULT_HEIGHT)
       ?: createFallbackBitmap(prompt)
     cleanupWebView()
@@ -84,7 +84,7 @@ class DreamLiteImageGenerator(
     val html = generateEditHtml(prompt, DEFAULT_WIDTH, DEFAULT_HEIGHT)
     val wv = getOrCreateWebView(DEFAULT_WIDTH, DEFAULT_HEIGHT)
     loadHtmlAndWait(wv, html)
-    delay(800)
+    delay(1200)
     val result = captureFrame(wv, DEFAULT_WIDTH, DEFAULT_HEIGHT)
       ?: sourceImage
     cleanupWebView()
@@ -163,6 +163,8 @@ class DreamLiteImageGenerator(
       wm.addView(c, params)
       windowAttached = true
       Log.d(TAG, "WebView attached to window via WindowManager")
+      // 挂窗后切软件层：硬件加速 WebView 的 draw(Canvas) 无法捕获文字/图形
+      wv.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
     } catch (e: SecurityException) {
       Log.w(TAG, "WindowManager.addView denied: ${e.message}, falling back to software layer")
       windowAttached = false
@@ -277,7 +279,7 @@ class DreamLiteImageGenerator(
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
   width:${width}px; height:${height}px;
-  font-family: -apple-system, 'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: sans-serif;
   overflow:hidden;
   display:flex; align-items:center; justify-content:center;
 }
