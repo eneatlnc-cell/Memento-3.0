@@ -15,8 +15,8 @@ android {
     applicationId = "com.myagent.app"
     minSdk = 31
     targetSdk = 36
-    versionCode = 14
-    versionName = "2.0.13"
+    versionCode = 15
+    versionName = "3.0.1"
   }
 
   buildTypes {
