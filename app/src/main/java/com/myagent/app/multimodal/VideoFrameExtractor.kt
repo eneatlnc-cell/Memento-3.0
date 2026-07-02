@@ -7,7 +7,6 @@ import android.net.Uri
 import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStream
 
 /**
  * 视频帧采样器 — 从视频中提取关键帧作为图片列表。
