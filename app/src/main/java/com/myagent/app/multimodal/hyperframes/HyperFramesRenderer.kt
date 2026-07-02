@@ -1,19 +1,24 @@
 package com.myagent.app.multimodal.hyperframes
 
 import android.app.Application
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.PixelFormat
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
 import android.util.Log
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
@@ -26,12 +31,15 @@ import kotlin.coroutines.resume
  *
  * 核心流程：
  * 1. WebView 加载 HTML 模板（Web Animations API）
- * 2. 逐帧 Seek 动画 timeline → WebView.draw(Canvas) 截图
+ * 2. 逐帧 Seek 动画 timeline → WebView 截图
  * 3. MediaCodec 硬件编码为 MP4
  *
  * 完全本地执行，零外部依赖，纯 Android 系统 API。
  *
- * v2.0：默认最低画质 854x480@24fps，用户可在设置中切换。
+ * v2.1 关键修复：Android 12+ WebView 必须通过 WindowManager.addView()
+ * 挂载到实际窗口才能获得 ViewRootImpl。没有 ViewRootImpl 的 WebView
+ * 只能渲染 CSS 背景，文字/图形/动画帧全部丢失。这是视频只有 84KB
+ * 且帧内容是黑底+噪声的根本原因。
  */
 class HyperFramesRenderer(
   private val app: Application,
@@ -46,7 +54,11 @@ class HyperFramesRenderer(
 
   private var webView: WebView? = null
   private var container: FrameLayout? = null
+  private var windowAttached = false
   private val mainHandler = Handler(Looper.getMainLooper())
+  private val wm: WindowManager by lazy {
+    app.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+  }
 
   /**
    * 渲染视频。
@@ -69,7 +81,7 @@ class HyperFramesRenderer(
     val videoDir = File(app.getExternalFilesDir(null) ?: app.cacheDir, "hyperframes").also { it.mkdirs() }
     val outputFile = File(videoDir, "hf_${System.currentTimeMillis()}.mp4")
 
-    // 1. 创建 WebView
+    // 1. 创建 WebView（WindowManager 挂窗）
     val wv = createWebView(width, height)
 
     // 2. 加载 HTML
@@ -80,7 +92,10 @@ class HyperFramesRenderer(
       return@withContext outputFile
     }
 
-    // 3. 逐帧渲染（WebView 操作在主线程，编码在后台线程避免 ANR）
+    // 等 WebView 完成首次布局和绘制
+    delay(500)
+
+    // 3. 逐帧渲染
     val totalFrames = duration * fps
     val encoder = BitmapToVideoEncoder(outputFile, width, height, fps)
 
@@ -89,10 +104,9 @@ class HyperFramesRenderer(
 
       for (frameIndex in 0 until totalFrames) {
         seekAnimation(wv, frameIndex, fps)
-        delay(16)
+        delay(16) // 等一帧时间让 WebView 处理 JS 动画
         val bitmap = captureFrame(wv, width, height)
         if (bitmap != null) {
-          // 编码（YUV 转换 + MediaCodec 输入）放到 Default 线程，避免阻塞主线程
           withContext(Dispatchers.Default) {
             encoder.encodeFrame(bitmap)
           }
@@ -102,11 +116,10 @@ class HyperFramesRenderer(
       }
 
       onProgress?.invoke(1.0f)
-      Log.i(TAG, "渲染完成: ${outputFile.absolutePath} (${width}x${height}@${fps}fps)")
+      Log.i(TAG, "渲染完成: ${outputFile.absolutePath} (${outputFile.length() / 1024}KB, ${width}x${height}@${fps}fps)")
     } catch (e: Exception) {
       Log.e(TAG, "渲染失败: ${e.message}", e)
     } finally {
-      // 确保无论成功失败都释放资源
       try {
         encoder.stop()
       } catch (e: Exception) {
@@ -124,36 +137,32 @@ class HyperFramesRenderer(
     }
   }
 
-  // ── WebView 管理（容器 attach + 软件层） ──
+  // ── WebView 管理（WindowManager 挂窗方案） ──
 
   /**
-   * 创建 WebView 并 attach 到隐藏 FrameLayout 容器。
+   * 创建 WebView 并通过 WindowManager 挂载到窗口。
    *
-   * 根因：Android 12+ 硬件加速在未 attach 的 WebView 上调用 draw(Canvas)
-   * 只输出背景色，不渲染 CSS/文字/图形。必须切 LAYER_TYPE_SOFTWARE 并 attach
-   * 到 ViewGroup 才能触发完整渲染管线。
+   * 根因：Android 12+ 硬件加速 WebView 未 attach 到窗口时，draw(Canvas)
+   * 只输出背景色，不渲染 CSS/文字/图形/动画。LAYER_TYPE_SOFTWARE +
+   * 容器 attach 只是逻辑 attach，无法获得 ViewRootImpl。
+   *
+   * 修复：WindowManager.addView() 挂载到实际窗口 → WebView 获得
+   * ViewRootImpl → 完整的 measure/layout/draw 渲染管线 → 所有 CSS
+   * 内容（文字、图形、动画帧）正确渲染。
    */
+  @Suppress("DEPRECATION")
   private fun createWebView(width: Int, height: Int): WebView {
-    // 清理旧实例
     cleanupWebView()
 
-    // 1. 创建隐藏容器
+    // 1. 创建容器
     val c = FrameLayout(app).apply {
       layoutParams = ViewGroup.LayoutParams(width, height)
     }
     container = c
 
-    // 2. 创建 WebView（软件层 + attach）
+    // 2. 创建 WebView（硬件加速，JS 必须开启用于动画）
     val wv = WebView(app).apply {
-      // 切软件层 — 截图场景必须，硬件加速在未 attach 时无法正常工作
-      setLayerType(View.LAYER_TYPE_SOFTWARE, null)
-
-      // 设置尺寸
-      layout(0, 0, width, height)
-      measure(
-        View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-        View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY)
-      )
+      layoutParams = ViewGroup.LayoutParams(width, height)
 
       settings.apply {
         javaScriptEnabled = true
@@ -164,19 +173,67 @@ class HyperFramesRenderer(
       webViewClient = WebViewClient()
     }
 
-    // 3. 关键：attach 到容器（未 attach 的 View 无法触发硬件加速渲染管线）
-    c.addView(wv, ViewGroup.LayoutParams(width, height))
+    c.addView(wv)
     webView = wv
+
+    // 3. 关键：WindowManager 挂载到窗口
+    try {
+      val type = WindowManager.LayoutParams.TYPE_APPLICATION_PANEL
+      val params = WindowManager.LayoutParams(
+        width, height,
+        type,
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+          or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+          or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+        PixelFormat.TRANSLUCENT,
+      ).apply {
+        gravity = Gravity.TOP or Gravity.LEFT
+        x = 0
+        y = 0
+      }
+      wm.addView(c, params)
+      windowAttached = true
+      Log.d(TAG, "WebView attached to window")
+    } catch (e: SecurityException) {
+      Log.w(TAG, "WindowManager.addView denied: ${e.message}, fallback to software")
+      windowAttached = false
+      wv.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+      wv.layout(0, 0, width, height)
+      wv.measure(
+        View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY),
+      )
+    } catch (e: Exception) {
+      Log.w(TAG, "WindowManager.addView failed: ${e.message}, fallback to software")
+      windowAttached = false
+      wv.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+      wv.layout(0, 0, width, height)
+      wv.measure(
+        View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY),
+      )
+    }
+
     return wv
   }
 
   /**
-   * 清理 WebView 和容器，防止内存泄漏。
+   * 清理 WebView 和容器，从窗口移除。
    */
   private fun cleanupWebView() {
+    if (windowAttached) {
+      try {
+        container?.let { wm.removeView(it) }
+      } catch (e: Exception) {
+        Log.w(TAG, "WindowManager.removeView failed: ${e.message}")
+      }
+      windowAttached = false
+    }
+
     try {
       container?.removeAllViews()
     } catch (_: Exception) {}
+
     try {
       webView?.destroy()
     } catch (_: Exception) {
@@ -229,6 +286,10 @@ class HyperFramesRenderer(
     """.trimIndent(), null)
   }
 
+  /**
+   * 捕获 WebView 当前帧为 Bitmap。
+   * 窗口挂载成功时 WebView 有完整渲染管线，draw(Canvas) 即可正确输出。
+   */
   private fun captureFrame(wv: WebView, targetWidth: Int, targetHeight: Int): Bitmap? {
     if (wv.width == 0 || wv.height == 0) return null
     val bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
@@ -352,7 +413,6 @@ class BitmapToVideoEncoder(
       return
     }
 
-    // 检查编解码器可用性，优先硬解，失败回退软解
     val mime = MediaFormat.MIMETYPE_VIDEO_AVC
     val codecInfo = findAvailableCodec(mime, isEncoder = true)
     if (codecInfo == null) {
@@ -402,9 +462,6 @@ class BitmapToVideoEncoder(
     }
   }
 
-  /**
-   * 消费编码器输出。返回 true 表示收到 EOS 标记。
-   */
   private fun drainEncoder(): Boolean {
     val codec = mediaCodec ?: return true
     val bufferInfo = MediaCodec.BufferInfo()
@@ -453,10 +510,6 @@ class BitmapToVideoEncoder(
     return false
   }
 
-  /**
-   * 停止编码 — 发送 EOS 信号，循环等待 codec 完成最后帧输出，然后释放资源。
-   * 修复：单次 drainEncoder 可能来不及消费全部输出帧，需循环等待直到收到 EOS 标记。
-   */
   fun stop() {
     if (state != State.STARTED) {
       safeRelease()
@@ -466,7 +519,6 @@ class BitmapToVideoEncoder(
     try {
       val codec = mediaCodec
       if (codec != null) {
-        // 发送 EOS（End of Stream）信号
         try {
           val inputBufferIndex = codec.dequeueInputBuffer(10_000)
           if (inputBufferIndex >= 0) {
@@ -478,7 +530,6 @@ class BitmapToVideoEncoder(
         } catch (e: Exception) {
           Log.e("BitmapEncoder", "EOS signal failed: ${e.message}", e)
         }
-        // 循环 drain，直到收到 EOS 输出标记或超时（最多 2 秒）
         val deadline = System.currentTimeMillis() + 2000
         var eosReceived = false
         while (!eosReceived && System.currentTimeMillis() < deadline) {
@@ -496,23 +547,17 @@ class BitmapToVideoEncoder(
     }
   }
 
-  /**
-   * 防御式释放 — 每个步骤独立 try-catch，确保单步失败不影响后续释放。
-   */
   private fun safeRelease() {
     if (state == State.RELEASED) return
 
-    // 1. 停止 codec
     try {
       mediaCodec?.stop()
     } catch (e: IllegalStateException) {
-      // 已处于 released 状态，忽略
       Log.w("BitmapEncoder", "Codec stop: already released")
     } catch (e: Exception) {
       Log.e("BitmapEncoder", "Codec stop failed: ${e.message}", e)
     }
 
-    // 2. 释放 codec
     try {
       mediaCodec?.release()
     } catch (e: Exception) {
@@ -520,7 +565,6 @@ class BitmapToVideoEncoder(
     }
     mediaCodec = null
 
-    // 3. 停止 muxer（仅在有数据写入时）
     try {
       if (muxerStarted) {
         mediaMuxer?.stop()
@@ -529,7 +573,6 @@ class BitmapToVideoEncoder(
       Log.e("BitmapEncoder", "Muxer stop failed: ${e.message}", e)
     }
 
-    // 4. 释放 muxer
     try {
       mediaMuxer?.release()
     } catch (e: Exception) {
@@ -541,19 +584,15 @@ class BitmapToVideoEncoder(
     Log.i("BitmapEncoder", "Encoder released (codec=$codecName, frames=$frameIndex)")
   }
 
-  // ── 编解码器查询 ──
-
   private fun findAvailableCodec(mime: String, isEncoder: Boolean): MediaCodecInfo? {
     return try {
       val codecList = MediaCodecList(MediaCodecList.ALL_CODECS)
-      // 优先硬件编解码器
       val hardware = codecList.codecInfos.filter { info ->
         info.isEncoder == isEncoder
           && info.supportedTypes.contains(mime)
-          && !info.name.startsWith("OMX.google.") // 排除软解
-          && !info.name.startsWith("c2.android.") // 排除 Android 软解
+          && !info.name.startsWith("OMX.google.")
+          && !info.name.startsWith("c2.android.")
       }
-      // 回退软件编解码器
       val software = codecList.codecInfos.filter { info ->
         info.isEncoder == isEncoder
           && info.supportedTypes.contains(mime)

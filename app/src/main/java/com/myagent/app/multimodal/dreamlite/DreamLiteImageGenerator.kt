@@ -1,17 +1,25 @@
 package com.myagent.app.multimodal.dreamlite
 
 import android.app.Application
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.PixelFormat
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Gravity
+import android.view.PixelCopy
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import kotlinx.coroutines.*
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * 图像生成器 — HTML 渲染方案（与 HyperFrames 共用 WebView 渲染管线）。
@@ -22,10 +30,12 @@ import kotlinx.coroutines.*
  * 核心流程：
  * 1. 解析 prompt 关键词 → 选择视觉主题（色彩、形状、布局）
  * 2. 生成自包含 HTML 页面（内联 CSS + 渐变/阴影/图形）
- * 3. WebView 加载 HTML → draw(Canvas) 截图
+ * 3. WebView 加载 HTML → WindowManager 临时挂窗 → PixelCopy 截图
  * 4. 返回 Bitmap
  *
- * 单例模式：WebView 复用，避免反复创建。
+ * 关键修复 v2.1：Android 12+ WebView 必须通过 WindowManager.addView()
+ * 挂载到实际窗口才能获得 ViewRootImpl，否则 CSS 背景能渲染但文字/图形
+ * 全部丢失。LAYER_TYPE_SOFTWARE + 容器 attach 只是逻辑 attach，不够。
  */
 class DreamLiteImageGenerator(
   private val app: Application,
@@ -39,7 +49,11 @@ class DreamLiteImageGenerator(
 
   private var webView: WebView? = null
   private var container: FrameLayout? = null
+  private var windowAttached = false
   private val mainHandler = Handler(Looper.getMainLooper())
+  private val wm: WindowManager by lazy {
+    app.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+  }
 
   /**
    * 文生图。根据 prompt 生成 HTML 视觉图像并截图。
@@ -55,11 +69,10 @@ class DreamLiteImageGenerator(
     val html = generateHtmlForImage(prompt, style, DEFAULT_WIDTH, DEFAULT_HEIGHT)
     val wv = getOrCreateWebView(DEFAULT_WIDTH, DEFAULT_HEIGHT)
     loadHtmlAndWait(wv, html)
-    // WebView 渲染是异步的，onPageFinished 后仍需等布局完成
-    delay(500)
+    // onPageFinished 后仍需等 WebView 完成布局 + 首次绘制
+    delay(800)
     val bitmap = captureFrame(wv, DEFAULT_WIDTH, DEFAULT_HEIGHT)
       ?: createFallbackBitmap(prompt)
-    // 清理容器 + WebView 防止内存泄漏
     cleanupWebView()
     bitmap
   }
@@ -71,11 +84,10 @@ class DreamLiteImageGenerator(
     prompt: String,
     sourceImage: Bitmap,
   ): Bitmap = withContext(Dispatchers.Main) {
-    // 编辑模式：将源图作为 CSS 背景，叠加文字/滤镜
     val html = generateEditHtml(prompt, DEFAULT_WIDTH, DEFAULT_HEIGHT)
     val wv = getOrCreateWebView(DEFAULT_WIDTH, DEFAULT_HEIGHT)
     loadHtmlAndWait(wv, html)
-    delay(500) // 等待 WebView 渲染完成
+    delay(800)
     val result = captureFrame(wv, DEFAULT_WIDTH, DEFAULT_HEIGHT)
       ?: sourceImage
     cleanupWebView()
@@ -88,17 +100,24 @@ class DreamLiteImageGenerator(
     }
   }
 
-  // ── WebView 管理（容器 attach + 软件层） ──
+  // ── WebView 管理（WindowManager 挂窗方案） ──
 
   /**
-   * 创建 WebView 并 attach 到隐藏 FrameLayout 容器。
+   * 创建 WebView 并通过 WindowManager 临时挂载到窗口。
    *
-   * 根因：Android 12+ 硬件加速在未 attach 的 WebView 上调用 draw(Canvas)
-   * 只输出背景色，不渲染 CSS/文字/图形。必须切 LAYER_TYPE_SOFTWARE 并 attach
-   * 到 ViewGroup 才能触发完整渲染管线。
+   * 根因：Android 12+ 硬件加速在未 attach 到窗口的 WebView 上调用 draw(Canvas)
+   * 只输出背景色，不渲染 CSS/文字/图形。LAYER_TYPE_SOFTWARE + 容器 attach
+   * 也只是逻辑 attach，WebView 没有 ViewRootImpl，无法完成完整渲染管线。
+   *
+   * 修复：通过 WindowManager.addView() 将 WebView 容器挂载到实际窗口，
+   * WebView 获得 ViewRootImpl → 触发完整的 measure/layout/draw 循环 →
+   * 文字/图形/阴影全部正确渲染。
+   *
+   * 使用 TYPE_APPLICATION_PANEL（API<30）或 TYPE_APPLICATION（API≥30），
+   * 不需要 SYSTEM_ALERT_WINDOW 权限。
    */
+  @Suppress("DEPRECATION")
   private fun getOrCreateWebView(width: Int, height: Int): WebView {
-    // 清理旧实例
     cleanupWebView()
 
     // 1. 创建隐藏容器
@@ -107,17 +126,9 @@ class DreamLiteImageGenerator(
     }
     container = c
 
-    // 2. 创建 WebView（软件层 + attach）
+    // 2. 创建 WebView
     val wv = WebView(app).apply {
-      // 切软件层 — 截图场景必须，硬件加速在未 attach 时无法正常工作
-      setLayerType(View.LAYER_TYPE_SOFTWARE, null)
-
-      // 设置尺寸
-      layout(0, 0, width, height)
-      measure(
-        View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-        View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY)
-      )
+      layoutParams = ViewGroup.LayoutParams(width, height)
 
       settings.apply {
         javaScriptEnabled = false // 图片生成不需要 JS
@@ -128,22 +139,82 @@ class DreamLiteImageGenerator(
       webViewClient = WebViewClient()
     }
 
-    // 3. 关键：attach 到容器（未 attach 的 View 无法触发硬件加速渲染管线）
-    c.addView(wv, ViewGroup.LayoutParams(width, height))
+    c.addView(wv)
     webView = wv
+
+    // 3. 关键：通过 WindowManager 挂载到实际窗口
+    try {
+      val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        // API 26+ 使用 TYPE_APPLICATION_OVERLAY 需要权限，改用 TYPE_APPLICATION_PANEL
+        // 虽然 deprecated 但 Android 12+ 仍然可用
+        WindowManager.LayoutParams.TYPE_APPLICATION_PANEL
+      } else {
+        WindowManager.LayoutParams.TYPE_APPLICATION_PANEL
+      }
+      val params = WindowManager.LayoutParams(
+        width, height,
+        type,
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+          or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+          or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+        PixelFormat.TRANSLUCENT,
+      ).apply {
+        gravity = Gravity.TOP or Gravity.LEFT
+        x = 0
+        y = 0
+      }
+      wm.addView(c, params)
+      windowAttached = true
+      Log.d(TAG, "WebView attached to window via WindowManager")
+    } catch (e: SecurityException) {
+      Log.w(TAG, "WindowManager.addView denied: ${e.message}, falling back to software layer")
+      windowAttached = false
+      // 回退方案：软件层 + 强制 layout（效果有限但至少不崩溃）
+      wv.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+      wv.layout(0, 0, width, height)
+      wv.measure(
+        View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY),
+      )
+    } catch (e: Exception) {
+      Log.w(TAG, "WindowManager.addView failed: ${e.message}, falling back to software layer")
+      windowAttached = false
+      wv.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+      wv.layout(0, 0, width, height)
+      wv.measure(
+        View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY),
+      )
+    }
+
     return wv
   }
 
   /**
-   * 清理 WebView 和容器，防止内存泄漏。
+   * 清理 WebView 和容器，从窗口移除，防止内存泄漏。
    */
   private fun cleanupWebView() {
+    // 1. 从 WindowManager 移除容器
+    if (windowAttached) {
+      try {
+        container?.let { wm.removeView(it) }
+      } catch (e: Exception) {
+        Log.w(TAG, "WindowManager.removeView failed: ${e.message}")
+      }
+      windowAttached = false
+    }
+
+    // 2. 清理容器内子视图
     try {
       container?.removeAllViews()
     } catch (_: Exception) {}
+
+    // 3. 销毁 WebView
     try {
       webView?.destroy()
-    } catch (_: Exception) {}
+    } catch (_: Exception) {
+      Log.w(TAG, "WebView destroy failed, continuing")
+    }
     webView = null
     container = null
   }
@@ -156,8 +227,6 @@ class DreamLiteImageGenerator(
       }
     }
     wv.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
-    // 用 delay 轮询代替 CountDownLatch.await()，不阻塞主线程
-    // 主线程必须保持空闲才能处理 WebView 的 onPageFinished 回调
     withTimeout(WEBVIEW_TIMEOUT_SEC * 1000L) {
       while (!loaded) {
         delay(100)
@@ -165,20 +234,88 @@ class DreamLiteImageGenerator(
     }
   }
 
-  private fun captureFrame(wv: WebView, targetWidth: Int, targetHeight: Int): Bitmap? {
-    // 确保 WebView 已完成布局（渲染异步完成后再量一次）
+  /**
+   * 捕获 WebView 内容为 Bitmap。
+   *
+   * 窗口挂载成功时使用 PixelCopy（Android O+ 官方推荐 API），
+   * 硬件加速视图也能正确截取。回退时使用 draw(Canvas)。
+   */
+  private suspend fun captureFrame(wv: WebView, targetWidth: Int, targetHeight: Int): Bitmap? {
     if (wv.width == 0 || wv.height == 0) {
       wv.layout(0, 0, targetWidth, targetHeight)
       wv.measure(
-        android.view.View.MeasureSpec.makeMeasureSpec(targetWidth, android.view.View.MeasureSpec.EXACTLY),
-        android.view.View.MeasureSpec.makeMeasureSpec(targetHeight, android.view.View.MeasureSpec.EXACTLY)
+        View.MeasureSpec.makeMeasureSpec(targetWidth, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(targetHeight, View.MeasureSpec.EXACTLY),
       )
     }
+
+    return if (windowAttached && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      captureWithPixelCopy(wv, targetWidth, targetHeight)
+    } else {
+      captureWithDraw(wv, targetWidth, targetHeight)
+    }
+  }
+
+  /**
+   * PixelCopy 截图 — 硬件加速兼容，Android O+。
+   */
+  private suspend fun captureWithPixelCopy(
+    wv: WebView,
+    targetWidth: Int,
+    targetHeight: Int,
+  ): Bitmap? {
+    return try {
+      val bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+      withTimeout(3000L) {
+        suspendCancellableCoroutine<Boolean> { cont ->
+          var resumed = false
+          try {
+            PixelCopy.request(
+              wv,
+              bitmap,
+              { copyResult ->
+                if (!resumed) {
+                  resumed = true
+                  if (copyResult == PixelCopy.SUCCESS) {
+                    cont.resume(true)
+                  } else {
+                    cont.resumeWithException(
+                      RuntimeException("PixelCopy failed with code: $copyResult"),
+                    )
+                  }
+                }
+              },
+              mainHandler,
+            )
+          } catch (e: Exception) {
+            if (!resumed) {
+              resumed = true
+              cont.resumeWithException(e)
+            }
+          }
+          cont.invokeOnCancellation {
+            if (!resumed) {
+              resumed = true
+            }
+          }
+        }
+      }
+      bitmap
+    } catch (e: Exception) {
+      Log.w(TAG, "PixelCopy failed: ${e.message}, falling back to draw(Canvas)")
+      captureWithDraw(wv, targetWidth, targetHeight)
+    }
+  }
+
+  /**
+   * draw(Canvas) 截图 — 回退方案。
+   */
+  private fun captureWithDraw(wv: WebView, targetWidth: Int, targetHeight: Int): Bitmap {
     val bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
     canvas.scale(
       targetWidth.toFloat() / wv.width.coerceAtLeast(1).toFloat(),
-      targetHeight.toFloat() / wv.height.coerceAtLeast(1).toFloat()
+      targetHeight.toFloat() / wv.height.coerceAtLeast(1).toFloat(),
     )
     wv.draw(canvas)
     return bitmap
@@ -273,7 +410,6 @@ body {
   private fun pickTheme(prompt: String, style: String?): Theme {
     val lower = prompt.lowercase()
 
-    // 风格覆盖
     if (style == "minimal" || style == "edit") {
       return Theme(
         bg = "#ffffff",
@@ -284,17 +420,10 @@ body {
         ornamentStyle = "background:radial-gradient(circle, rgba(0,0,0,0.04),transparent);",
       )
     }
-    if (style == "dark") {
-      return darkTheme()
-    }
-    if (style == "warm") {
-      return warmTheme()
-    }
-    if (style == "vibrant") {
-      return vibrantTheme()
-    }
+    if (style == "dark") return darkTheme()
+    if (style == "warm") return warmTheme()
+    if (style == "vibrant") return vibrantTheme()
 
-    // 关键词匹配
     return when {
       lower.contains("日") || lower.contains("sun") || lower.contains("光") ||
       lower.contains("黎明") || lower.contains("dawn") || lower.contains("日出") ||
@@ -394,7 +523,6 @@ body {
   )
 
   private fun formatTitle(prompt: String): String {
-    // 截取前 40 字符，去除换行
     val cleaned = prompt.replace("\n", " ").replace("\r", "").trim()
     return if (cleaned.length <= 40) cleaned
     else cleaned.take(40) + "…"

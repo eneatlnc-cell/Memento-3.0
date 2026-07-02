@@ -348,8 +348,19 @@ class ChatController(
         }
       } catch (e: CancellationException) {
         throw e
+      } catch (e: OutOfMemoryError) {
+        Log.e(TAG, "Inference OOM: ${e.message}")
+        _errorText.value = "内存不足，请稍后重试"
+        _streamingText.value = null
+        _isLoading.value = false
       } catch (e: Exception) {
         _errorText.value = e.message ?: "发送失败，请重试"
+        _streamingText.value = null
+        _isLoading.value = false
+      } catch (t: Throwable) {
+        // 兜底：捕获原生层异常（如 LiteRT-LM 的 SIGSEGV 被转换为 Java 异常）
+        Log.e(TAG, "Fatal inference error: ${t.javaClass.name} — ${t.message}")
+        _errorText.value = "模型推理遇到严重错误，请重启应用"
         _streamingText.value = null
         _isLoading.value = false
       }
@@ -458,6 +469,10 @@ class ChatController(
       } catch (e: Exception) {
         Log.e(TAG, "sendImage failed: ${e.message}", e)
         _errorText.value = "图片处理失败: ${e.message}"
+      } catch (t: Throwable) {
+        // 兜底：捕获 BitmapFactory 等原生层异常
+        Log.e(TAG, "sendImage fatal: ${t.javaClass.name} — ${t.message}")
+        _errorText.value = "图片处理遇到严重错误，请尝试其他图片"
       }
     }
   }
@@ -485,8 +500,19 @@ class ChatController(
     scope.launch {
       try {
         val uri = Uri.parse(videoUri)
+
+        // 视频预校验：检查 URI 是否可访问，避免 MediaMetadataRetriever 原生崩溃
         val fileSize = withContext(Dispatchers.IO) {
-          VideoFrameExtractor.getFileSize(context, uri)
+          try {
+            VideoFrameExtractor.getFileSize(context, uri)
+          } catch (t: Throwable) {
+            Log.e(TAG, "Video file size check failed: ${t.javaClass.name} — ${t.message}")
+            -1L
+          }
+        }
+        if (fileSize <= 0) {
+          _errorText.value = "视频文件无法访问，可能已被删除或格式不支持"
+          return@launch
         }
         if (fileSize > VideoFrameExtractor.MAX_FILE_SIZE) {
           val sizeMB = fileSize / (1024 * 1024)
@@ -514,6 +540,10 @@ class ChatController(
       } catch (e: Exception) {
         Log.e(TAG, "Video send failed: ${e.message}", e)
         _errorText.value = "视频处理失败: ${e.message}"
+      } catch (t: Throwable) {
+        // 兜底：捕获 MediaMetadataRetriever 等原生层异常
+        Log.e(TAG, "Video send fatal: ${t.javaClass.name} — ${t.message}")
+        _errorText.value = "视频处理遇到严重错误，请尝试其他视频"
       }
     }
   }
