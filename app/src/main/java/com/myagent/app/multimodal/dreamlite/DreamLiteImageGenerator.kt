@@ -10,7 +10,6 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.Gravity
-import android.view.PixelCopy
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -18,8 +17,6 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import kotlinx.coroutines.*
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /**
  * 图像生成器 — HTML 渲染方案（与 HyperFrames 共用 WebView 渲染管线）。
@@ -237,10 +234,10 @@ class DreamLiteImageGenerator(
   /**
    * 捕获 WebView 内容为 Bitmap。
    *
-   * 窗口挂载成功时使用 PixelCopy（Android O+ 官方推荐 API），
-   * 硬件加速视图也能正确截取。回退时使用 draw(Canvas)。
+   * 修复 v2.1：WebView 通过 WindowManager 挂载到窗口后有完整 ViewRootImpl，
+   * draw(Canvas) 即可正确输出所有 CSS 内容（文字、图形、阴影等）。
    */
-  private suspend fun captureFrame(wv: WebView, targetWidth: Int, targetHeight: Int): Bitmap? {
+  private fun captureFrame(wv: WebView, targetWidth: Int, targetHeight: Int): Bitmap? {
     if (wv.width == 0 || wv.height == 0) {
       wv.layout(0, 0, targetWidth, targetHeight)
       wv.measure(
@@ -248,69 +245,6 @@ class DreamLiteImageGenerator(
         View.MeasureSpec.makeMeasureSpec(targetHeight, View.MeasureSpec.EXACTLY),
       )
     }
-
-    return if (windowAttached && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      captureWithPixelCopy(wv, targetWidth, targetHeight)
-    } else {
-      captureWithDraw(wv, targetWidth, targetHeight)
-    }
-  }
-
-  /**
-   * PixelCopy 截图 — 硬件加速兼容，Android O+。
-   */
-  private suspend fun captureWithPixelCopy(
-    wv: WebView,
-    targetWidth: Int,
-    targetHeight: Int,
-  ): Bitmap? {
-    return try {
-      val bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
-      withTimeout(3000L) {
-        suspendCancellableCoroutine<Boolean> { cont ->
-          var resumed = false
-          try {
-            PixelCopy.request(
-              wv,
-              bitmap,
-              { copyResult ->
-                if (!resumed) {
-                  resumed = true
-                  if (copyResult == PixelCopy.SUCCESS) {
-                    cont.resume(true)
-                  } else {
-                    cont.resumeWithException(
-                      RuntimeException("PixelCopy failed with code: $copyResult"),
-                    )
-                  }
-                }
-              },
-              mainHandler,
-            )
-          } catch (e: Exception) {
-            if (!resumed) {
-              resumed = true
-              cont.resumeWithException(e)
-            }
-          }
-          cont.invokeOnCancellation {
-            if (!resumed) {
-              resumed = true
-            }
-          }
-        }
-      }
-      bitmap
-    } catch (e: Exception) {
-      Log.w(TAG, "PixelCopy failed: ${e.message}, falling back to draw(Canvas)")
-      captureWithDraw(wv, targetWidth, targetHeight)
-    }
-  }
-
-  /**
-   * draw(Canvas) 截图 — 回退方案。
-   */
-  private fun captureWithDraw(wv: WebView, targetWidth: Int, targetHeight: Int): Bitmap {
     val bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
     canvas.scale(
