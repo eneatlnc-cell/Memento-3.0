@@ -402,8 +402,11 @@ class BitmapToVideoEncoder(
     }
   }
 
-  private fun drainEncoder() {
-    val codec = mediaCodec ?: return
+  /**
+   * 消费编码器输出。返回 true 表示收到 EOS 标记。
+   */
+  private fun drainEncoder(): Boolean {
+    val codec = mediaCodec ?: return true
     val bufferInfo = MediaCodec.BufferInfo()
     try {
       while (true) {
@@ -434,18 +437,25 @@ class BitmapToVideoEncoder(
             } catch (e: Exception) {
               Log.e("BitmapEncoder", "writeSampleData failed: ${e.message}", e)
             }
+            val isEos = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
             codec.releaseOutputBuffer(idx, false)
+            if (isEos) {
+              Log.i("BitmapEncoder", "EOS received, total frames: $frameIndex")
+              return true
+            }
           }
-          idx == MediaCodec.INFO_TRY_AGAIN_LATER -> break
+          idx == MediaCodec.INFO_TRY_AGAIN_LATER -> return false
         }
       }
     } catch (e: Exception) {
       Log.e("BitmapEncoder", "drainEncoder failed: ${e.message}", e)
     }
+    return false
   }
 
   /**
-   * 停止编码 — 发送 EOS 信号，等待 codec 完成最后帧输出，然后释放资源。
+   * 停止编码 — 发送 EOS 信号，循环等待 codec 完成最后帧输出，然后释放资源。
+   * 修复：单次 drainEncoder 可能来不及消费全部输出帧，需循环等待直到收到 EOS 标记。
    */
   fun stop() {
     if (state != State.STARTED) {
@@ -454,9 +464,9 @@ class BitmapToVideoEncoder(
     }
 
     try {
-      // 发送 EOS（End of Stream）信号，让 codec 完成最后帧编码
       val codec = mediaCodec
       if (codec != null) {
+        // 发送 EOS（End of Stream）信号
         try {
           val inputBufferIndex = codec.dequeueInputBuffer(10_000)
           if (inputBufferIndex >= 0) {
@@ -468,8 +478,15 @@ class BitmapToVideoEncoder(
         } catch (e: Exception) {
           Log.e("BitmapEncoder", "EOS signal failed: ${e.message}", e)
         }
-        // 等待 EOS 输出
-        drainEncoder()
+        // 循环 drain，直到收到 EOS 输出标记或超时（最多 2 秒）
+        val deadline = System.currentTimeMillis() + 2000
+        var eosReceived = false
+        while (!eosReceived && System.currentTimeMillis() < deadline) {
+          eosReceived = drainEncoder()
+        }
+        if (!eosReceived) {
+          Log.w("BitmapEncoder", "EOS not received within deadline, stopping anyway")
+        }
       }
     } catch (e: Exception) {
       Log.e("BitmapEncoder", "stop drain failed: ${e.message}", e)

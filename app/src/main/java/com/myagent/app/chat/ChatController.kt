@@ -258,18 +258,33 @@ class ChatController(
             if (!file.exists() || file.length() == 0L) {
               Log.w(TAG, "Skipping invalid image: $path")
               false
-            } else true
+            } else {
+              // 预解码校验：BitmapFactory 解码失败则说明图片损坏/格式不支持，
+              // 避免传入 LiteRT-LM 原生层触发 SIGSEGV
+              try {
+                val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(path, opts)
+                val valid = opts.outWidth > 0 && opts.outHeight > 0
+                if (!valid) Log.w(TAG, "Corrupted/unsupported image: $path")
+                valid
+              } catch (t: Throwable) {
+                Log.w(TAG, "Image validation failed: $path — ${t.message}")
+                false
+              }
+            }
           }
         } else emptyList()
 
+        if (imagePaths.isNotEmpty() && validPaths.isEmpty()) {
+          _errorText.value = "图片格式不支持或已损坏，请重试"
+          _isLoading.value = false
+          return@launch
+        }
+
         // 流式推理 — 有图片时走多模态路径
         val assistantId = UUID.randomUUID().toString()
-        val assistantMessage = ChatMessage(
-          id = assistantId,
-          role = "assistant",
-          content = "",
-        )
-        _messages.update { it + assistantMessage }
+        // 延迟添加助手消息：只有首 token 到达后才插入，避免 cancel 时残留空气泡
+        var assistantAdded = false
 
         val fullResponse = StringBuilder()
         val inferenceFlow = if (validPaths.isNotEmpty()) {
@@ -284,6 +299,10 @@ class ChatController(
         var isFirstToken = true
         inferenceFlow.collect { chunk ->
           fullResponse.append(chunk)
+          if (!assistantAdded) {
+            _messages.update { it + ChatMessage(id = assistantId, role = "assistant", content = "") }
+            assistantAdded = true
+          }
           val now = System.currentTimeMillis()
           if (isFirstToken || now - lastStreamUpdate >= 50) {
             _streamingText.value = fullResponse.toString()
@@ -295,6 +314,16 @@ class ChatController(
         _streamingText.value = fullResponse.toString()
 
         val rawContent = fullResponse.toString()
+
+        // 如果推理无任何输出，添加错误消息
+        if (!assistantAdded) {
+          _messages.update { it + ChatMessage(
+            id = assistantId, role = "assistant",
+            content = "抱歉，推理未产生任何输出，请稍后重试"
+          )}
+          _isLoading.value = false
+          return@launch
+        }
 
         // 解析多模态意图标记
         val (cleanContent, genAction) = parseMultimodalTag(rawContent)
@@ -338,7 +367,10 @@ class ChatController(
           // 保存到 cacheDir/images/ 子目录，匹配 FileProvider 的路径映射
           val imagesDir = File(cacheDir, "images").also { it.mkdirs() }
           val file = File(imagesDir, "gen_${UUID.randomUUID()}.png")
-          FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+          val ok = FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+          if (!ok || file.length() == 0L) {
+            throw Exception("图片写入失败，可能是磁盘空间不足")
+          }
           val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
           Log.i(TAG, "Generated image saved: ${file.absolutePath} (${file.length() / 1024}KB)")
           val imageMsg = ChatMessage(
@@ -347,6 +379,7 @@ class ChatController(
             content = action.prompt,
             type = "image",
             attachmentUri = uri.toString(),
+            attachmentMimeType = "image/png",
             localPath = file.absolutePath,
           )
           _messages.update { it + imageMsg }
@@ -368,6 +401,10 @@ class ChatController(
           if (videoFile.length() == 0L) {
             throw Exception("视频文件为空，渲染可能超时")
           }
+          // 基本完整性检查：MP4 文件至少需要 ftyp + moov 原子（最小 ~1KB）
+          if (videoFile.length() < 1024) {
+            throw Exception("视频文件过小，可能已损坏")
+          }
           val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", videoFile)
           Log.i(TAG, "Generated video saved: ${videoFile.absolutePath} (${videoFile.length() / 1024}KB)")
           val videoMsg = ChatMessage(
@@ -376,6 +413,7 @@ class ChatController(
             content = action.prompt,
             type = "video",
             attachmentUri = uri.toString(),
+            attachmentMimeType = "video/mp4",
             localPath = videoFile.absolutePath,
           )
           _messages.update { it.map { m -> if (m.id == progressId) videoMsg else m } }

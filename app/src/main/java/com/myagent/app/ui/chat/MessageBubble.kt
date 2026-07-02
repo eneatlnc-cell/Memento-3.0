@@ -160,7 +160,7 @@ private fun ImageBubble(
         .height(150.dp)
         .clip(RoundedCornerShape(8.dp))
         .clickable {
-          openWithSystemViewer(context, uri, "image/*")
+          openWithSystemViewer(context, uri, "image/png")
         },
       contentScale = ContentScale.Crop,
     )
@@ -210,7 +210,7 @@ private fun VideoBubble(
       )
       .clickable(enabled = uri != null) {
         if (uri != null) {
-          openWithSystemViewer(context, uri, "video/*")
+          openWithSystemViewer(context, uri, "video/mp4")
         }
       },
     contentAlignment = Alignment.Center,
@@ -259,6 +259,9 @@ private fun openWithSystemViewer(context: android.content.Context, uriString: St
     val intent = Intent(Intent.ACTION_VIEW).apply {
       setDataAndType(uri, mimeType)
       addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      // ClipData 兜底：部分 OEM ROM（MIUI/ColorOS）上 NEW_TASK 与 URI 授权冲突，
+      // 通过 ClipData 授予额外权限可提高兼容性
+      clipData = android.content.ClipData.newUri(context.contentResolver, "media", uri)
       addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
     // 检查是否有应用能处理

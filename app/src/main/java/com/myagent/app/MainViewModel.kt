@@ -41,12 +41,19 @@ class MainViewModel(
   @Volatile private var foreground = false
   @Volatile private var runtimeStartupQueued = false
 
+  /** 运行时未就绪时的待处理操作 */
+  private val pendingActions = mutableListOf<() -> Unit>()
+
   private fun ensureRuntime(): NodeRuntime {
     runtimeRef.value?.let { return it }
     val runtime = nodeApp.ensureRuntime()
     runtime.setForeground(foreground)
     runtimeRef.value = runtime
     syncDownloadState()
+    // 执行所有排队中的操作
+    val actions = pendingActions.toList()
+    pendingActions.clear()
+    actions.forEach { it() }
     return runtime
   }
 
@@ -183,7 +190,8 @@ class MainViewModel(
     try {
       val runtime = runtimeRef.value
       if (runtime == null) {
-        Log.w("MainViewModel", "Runtime not ready, queueing startup")
+        Log.w("MainViewModel", "Runtime not ready, queueing image for later")
+        pendingActions.add { runtimeRef.value?.sendImage(uri.toString(), caption) }
         queueRuntimeStartup()
         return
       }
@@ -197,7 +205,8 @@ class MainViewModel(
     try {
       val runtime = runtimeRef.value
       if (runtime == null) {
-        Log.w("MainViewModel", "Runtime not ready, queueing startup")
+        Log.w("MainViewModel", "Runtime not ready, queueing video for later")
+        pendingActions.add { runtimeRef.value?.sendVideo(uri.toString(), caption) }
         queueRuntimeStartup()
         return
       }

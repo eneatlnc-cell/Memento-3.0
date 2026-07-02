@@ -71,7 +71,6 @@ object VideoFrameExtractor {
         val scaled = if (bitmap.width > 1024) {
           val ratio = 1024f / bitmap.width
           Bitmap.createScaledBitmap(bitmap, 1024, (bitmap.height * ratio).toInt(), true)
-            .also { if (it != bitmap) bitmap.recycle() }
         } else bitmap
 
         val frameFile = File(cacheDir, "vf_${System.currentTimeMillis()}_${i}.jpg")
@@ -80,7 +79,9 @@ object VideoFrameExtractor {
         }
         frames.add(frameFile.absolutePath)
 
+        // 释放 Bitmap 内存：MediaMetadataRetriever 文档要求调用者 recycle
         if (scaled != bitmap) scaled.recycle()
+        bitmap.recycle()
       }
 
       Log.i(TAG, "Extracted ${frames.size} frames from video")
