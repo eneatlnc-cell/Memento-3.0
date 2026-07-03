@@ -363,4 +363,96 @@ Java_com_myagent_app_model_LlamaNative_getBackendInfo(JNIEnv *env, jobject) {
   return env->NewStringUTF(info.c_str());
 }
 
+// ===== 带 GBNF grammar 约束的流式生成（结构化输出） =====
+//
+// 设计：在采样器链末尾追加 grammar sampler，强制模型只能输出符合 grammar 的 token。
+// 这是从源头约束 LLM 输出结构，模型物理上无法生成非法 JSON。
+// 与"生成后校验"相比，无需重试循环，端侧小模型也能稳定产出结构化数据。
+
+JNIEXPORT void JNICALL
+Java_com_myagent_app_model_LlamaNative_completionWithGrammar(
+  JNIEnv *env, jobject, jlong jctx, jstring jprompt, jstring jgrammar,
+  jint maxTokens, jfloat temp, jfloat topP, jint topK,
+  jobject jcallback) {
+  auto *ctx = reinterpret_cast<llama_context *>(jctx);
+  if (ctx == nullptr) {
+    LOGE("completionWithGrammar: null context");
+    return;
+  }
+
+  const llama_vocab *vocab = llama_model_get_vocab(llama_get_model(ctx));
+  const char *prompt = env->GetStringUTFChars(jprompt, nullptr);
+  const char *grammar = env->GetStringUTFChars(jgrammar, nullptr);
+  const size_t prompt_len = std::strlen(prompt);
+
+  // 1) tokenize prompt
+  std::vector<llama_token> tokens(prompt_len + 16);
+  int n = llama_tokenize(vocab, prompt, (int32_t)prompt_len,
+                         tokens.data(), (int32_t)tokens.size(),
+                         true, true);
+  env->ReleaseStringUTFChars(jprompt, prompt);
+  if (n < 0) {
+    tokens.resize(-n);
+    n = llama_tokenize(vocab, prompt, (int32_t)prompt_len,
+                       tokens.data(), (int32_t)tokens.size(), true, true);
+  }
+  if (n <= 0) {
+    LOGE("tokenize failed (grammar)");
+    env->ReleaseStringUTFChars(jgrammar, grammar);
+    return;
+  }
+  tokens.resize(n);
+
+  // 2) 喂 prompt
+  llama_batch batch = llama_batch_get_one(tokens.data(), n);
+  if (llama_decode(ctx, batch) != 0) {
+    LOGE("prompt decode failed (grammar)");
+    env->ReleaseStringUTFChars(jgrammar, grammar);
+    return;
+  }
+
+  // 3) 采样器链：top_k → top_p → temp → dist → grammar
+  //    grammar 必须在 dist 之后，它接受 dist 的输出并约束到合法 token 集合
+  llama_sampler *sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
+  llama_sampler_chain_add(sampler, llama_sampler_init_top_k(topK));
+  llama_sampler_chain_add(sampler, llama_sampler_init_top_p(topP, 1));
+  llama_sampler_chain_add(sampler, llama_sampler_init_temp(temp));
+  llama_sampler_chain_add(sampler, llama_sampler_init_dist(0));
+
+  if (grammar != nullptr && grammar[0] != '\0') {
+    llama_sampler *g = llama_sampler_init_grammar(vocab, grammar, "root");
+    if (g != nullptr) {
+      llama_sampler_chain_add(sampler, g);
+      LOGI("grammar constraint enabled");
+    } else {
+      LOGE("grammar init failed, falling back to unconstrained");
+    }
+  }
+  env->ReleaseStringUTFChars(jgrammar, grammar);
+
+  TokenEmitter emitter(env, jcallback);
+  const llama_token eos = llama_vocab_eos(vocab);
+  char buf[128];
+
+  // 4) 自回归生成（grammar 自动约束每个 token 合法）
+  for (int i = 0; i < maxTokens; ++i) {
+    llama_token tok = llama_sampler_sample(sampler, ctx, -1);
+    if (tok == eos) {
+      emitter.emit("", true);
+      break;
+    }
+    int piece_len = llama_token_to_piece(vocab, tok, buf, sizeof(buf), 0, false);
+    if (piece_len > 0) {
+      emitter.emit(std::string(buf, piece_len), false);
+    }
+    llama_batch b = llama_batch_get_one(&tok, 1);
+    if (llama_decode(ctx, b) != 0) {
+      LOGE("decode failed at token %d (grammar)", i);
+      break;
+    }
+  }
+
+  llama_sampler_free(sampler);
+}
+
 } // extern "C"

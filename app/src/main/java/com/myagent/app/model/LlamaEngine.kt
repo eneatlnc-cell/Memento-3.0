@@ -228,6 +228,50 @@ class LlamaEngine(private val context: Context) {
   }
 
   /**
+   * 带 GBNF grammar 约束的结构化生成（漫剧场景 JSON）。
+   *
+   * 设计：在采样阶段用 grammar 强制约束输出结构，模型物理上无法生成非法 JSON。
+   * 无需事后校验循环，端侧 0.8B 也能稳定产出结构化数据。
+   *
+   * @param systemPrompt 系统提示词（含可用 assetRef 词典注入）
+   * @param userPrompt   用户本轮输入
+   * @param grammar      GBNF 语法定义（root 规则）
+   * @return 流式 JSON 字符串片段
+   */
+  fun generateScene(systemPrompt: String, userPrompt: String, grammar: String): Flow<String> {
+    val ctxSnapshot = synchronized(this) { ctx }
+    if (ctxSnapshot == 0L) {
+      Log.e(TAG, "Context not initialized — cannot generate scene")
+      return callbackFlow { close() }
+    }
+    val fullPrompt = buildQwenChatPrompt(systemPrompt, userPrompt, imageCount = 0)
+    return callbackFlow {
+      try {
+        LlamaNative.completionWithGrammar(
+          ctx = ctxSnapshot,
+          prompt = fullPrompt,
+          grammarStr = grammar,
+          maxTokens = 768,  // 结构化 JSON 需要更多 token
+          temperature = 0.4f,  // 结构化输出降温度，更稳定
+          topP = 0.9f,
+          topK = 40,
+          callback = object : LlamaNative.TokenCallback {
+            override fun onToken(piece: String, isEos: Boolean) {
+              if (piece.isNotEmpty()) trySend(piece)
+              if (isEos) close()
+            }
+          },
+        )
+        if (!isClosedForSend) close()
+      } catch (e: Exception) {
+        Log.e(TAG, "Generate scene error: ${e.message}", e)
+        close(e)
+      }
+      awaitClose {}
+    }
+  }
+
+  /**
    * 关闭引擎，释放所有资源（synchronized 防止与 generate/init 并发）。
    */
   fun close() = synchronized(this) { closeInternal() }

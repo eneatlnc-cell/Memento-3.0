@@ -1,0 +1,34 @@
+{
+  "version": "1.0",
+  "description": "Memento 漫剧资源词典 —— assetRef 合法集合。LLM 只能从此处选值，由 prompt 注入。",
+  "characters": {
+    "husky": {
+      "name": "哈士奇",
+      "defaultAsset": "husky_tongue_out",
+      "assets": [
+        { "ref": "husky_tongue_out", "desc": "吐舌卖萌" },
+        { "ref": "husky_sad", "desc": "委屈低头" },
+        { "ref": "husky_angry", "desc": "生气炸毛" },
+        { "ref": "husky_happy", "desc": "开心摇尾" },
+        { "ref": "husky_surprised", "desc": "惊讶瞪眼" },
+        { "ref": "husky_sleepy", "desc": "困倦打哈欠" },
+        { "ref": "husky_curious", "desc": "好奇歪头" },
+        { "ref": "husky_proud", "desc": "骄傲挺胸" }
+      ]
+    },
+    "cat": {
+      "name": "橘猫",
+      "defaultAsset": "cat_neutral",
+      "assets": [
+        { "ref": "cat_neutral", "desc": "默认坐姿" },
+        { "ref": "cat_yawn", "desc": "打哈欠" },
+        { "ref": "cat_stretch", "desc": "伸懒腰" },
+        { "ref": "cat_alert", "desc": "警觉竖耳" },
+        { "ref": "cat_purr", "desc": "满足呼噜" },
+        { "ref": "cat_knock", "desc": "推杯子" }
+      ]
+    }
+  },
+  "layouts": ["fullscreen", "split", "overlay"],
+  "animations": ["pop", "fade", "typewriter", "slide"]
+}

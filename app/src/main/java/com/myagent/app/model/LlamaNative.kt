@@ -94,6 +94,21 @@ object LlamaNative {
 
   external fun getBackendInfo(): String
 
+  // ── 带 GBNF grammar 约束的流式生成（结构化输出） ──
+  // grammarStr 是 GBNF 语法定义，grammarRoot 通常是 "root"
+  // 采样阶段强制约束，模型无法生成非法 token，无需事后校验循环
+
+  external fun completionWithGrammar(
+    ctx: Long,
+    prompt: String,
+    grammarStr: String,
+    maxTokens: Int,
+    temperature: Float,
+    topP: Float,
+    topK: Int,
+    callback: TokenCallback,
+  )
+
   /**
    * 流式 token 回调接口。
    * onToken 在 JNI 线程被调用，Kotlin 侧应快速转发到 Channel/Flow。
