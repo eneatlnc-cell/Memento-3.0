@@ -8,13 +8,12 @@ import android.util.Log
  * 句柄用 Long 传递（opaque pointer），Kotlin 侧不接触原生指针。
  * 所有方法必须在 LlamaEngine 的 synchronized 块内调用，避免并发竞争。
  *
- * 依赖的原生库（jniLibs/arm64-v8a/，由 Snapdragon toolchain docker 编译）：
- * - libggml.so / libggml-cpu.so / libggml-opencl.so / libggml-hexagon.so
- * - libggml-htp-v73.so / v75 / v79 / v81（按设备 SoC 运行时选择）
- * - libllama.so / libmtmd.so
- * - libllama_jni.so（本项目自编的 JNI wrapper）
+ * 依赖的原生库（jniLibs/arm64-v8a/）：
+ * - libllama.so — 合体库（llama.cpp + ggml + mtmd + Hexagon + OpenCL 后端），
+ *   来自 llama.rn 0.12.5 预编译（librnllama_v8_2_dotprod_i8mm_hexagon_opencl.so 重命名）
+ * - libllama_jni.so — 本项目自编的 JNI wrapper
  *
- * 加载顺序很重要：ggml 先于 llama，llama 先于 mtmd，最后加载本项目 wrapper。
+ * 加载顺序：先加载 libllama.so（底层 C API），再加载 libllama_jni.so（JNI 桥接）。
  */
 object LlamaNative {
   private const val TAG = "LlamaNative"
@@ -26,13 +25,12 @@ object LlamaNative {
     synchronized(this) {
       if (loaded) return
       try {
-        // 顺序：底层 → 上层 → wrapper
-        System.loadLibrary("ggml")
+        // 先加载底层合体库（含 llama.cpp + ggml + mtmd + Hexagon + OpenCL）
         System.loadLibrary("llama")
-        System.loadLibrary("mtmd")
+        // 再加载我们的 JNI wrapper
         System.loadLibrary("llama_jni")
         loaded = true
-        Log.i(TAG, "Native libraries loaded")
+        Log.i(TAG, "Native libraries loaded (libllama.so + libllama_jni.so)")
       } catch (e: UnsatisfiedLinkError) {
         Log.e(TAG, "Failed to load native libraries: ${e.message}", e)
         throw e

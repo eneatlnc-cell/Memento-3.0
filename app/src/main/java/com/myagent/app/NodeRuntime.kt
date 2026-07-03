@@ -19,10 +19,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * Memento v2.0 运行时 — 管理 UI 状态、聊天控制器、模型加载器、下载状态。
+ * Memento v3.1 运行时 — 管理 UI 状态、聊天控制器、模型加载器、下载状态。
  *
- * v2.0：LiteRT-LM 替代 llama.cpp，纯 Kotlin 推理，无需 nativeLibDir。
- * 新增：仪式感人格锁定 + 视频画质可配置。
+ * v3.1：llama.cpp 推理引擎 + 双文件模型（主模型 + mmproj），骁龙 Hexagon NPU 加速。
  */
 class NodeRuntime(
   private val app: NodeApp,
@@ -143,7 +142,7 @@ class NodeRuntime(
   // --- 操作 ---
 
   fun setForeground(value: Boolean) {
-    // v2.0 本地推理，无需特殊处理
+    // v3.1 本地推理，无需特殊处理
   }
 
   fun sendChat(message: String, attachments: List<OutgoingAttachment> = emptyList()) {

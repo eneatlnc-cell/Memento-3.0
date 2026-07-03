@@ -87,7 +87,8 @@ class DownloadForegroundService : Service() {
     // 如果已有下载任务，先取消
     downloadJob?.cancel()
 
-    val installer = ModelInstaller(this)
+    // 共享 NodeApp 单例：确保全 App 用同一个 ModelInstaller（鉴权状态、URL 配置一致）
+    val installer = (application as com.myagent.app.NodeApp).modelInstaller
     val maxRetries = 3
 
     downloadJob = scope.launch {

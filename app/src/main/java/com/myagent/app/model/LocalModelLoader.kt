@@ -19,7 +19,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  * - 主模型：qwen3.5-0.8b-q4_k_m.gguf
  * - 视觉投影器：mmproj-BF16.gguf（多模态必需）
  *
- * 业务层接口保持不变（generate / generateWithImages / unload），
+ * 业务层接口（generate / generateWithImages / unload）保持稳定，
  * 引擎切换对 ChatController 等上层透明。
  */
 class LocalModelLoader(
@@ -87,8 +87,11 @@ class LocalModelLoader(
 
   /**
    * 流式生成回复。模型未就绪时尝试自动恢复，仍失败则返回提示。
+   *
+   * @param systemPrompt 系统提示词 + 记忆上下文（已由上层拼好），为空则省略 system 段
+   * @param userPrompt   用户本轮输入的纯文本（不含 chat template 标记，由 LlamaEngine 包装）
    */
-  fun generate(prompt: String): Flow<String> {
+  fun generate(systemPrompt: String, userPrompt: String): Flow<String> {
     if (!tryAutoRecover()) {
       Log.w(TAG, "Model not ready, cannot generate")
       return callbackFlow {
@@ -101,7 +104,7 @@ class LocalModelLoader(
 
       val inferenceJob = inferenceScope.launch {
         try {
-          engine.generate(prompt).collect { chunk ->
+          engine.generate(systemPrompt, userPrompt).collect { chunk ->
             trySend(chunk)
           }
         } catch (e: CancellationException) {
@@ -134,8 +137,12 @@ class LocalModelLoader(
   /**
    * 多模态流式生成（文本 + 图片）。
    * 图片路径传给 llama.cpp mtmd，Qwen3.5 视觉编码器解析。
+   *
+   * @param systemPrompt 系统提示词 + 记忆上下文（已由上层拼好），为空则省略 system 段
+   * @param userPrompt   用户本轮输入的纯文本（不含 chat template 标记）
+   * @param imagePaths   图片绝对路径列表
    */
-  fun generateWithImages(prompt: String, imagePaths: List<String>): Flow<String> {
+  fun generateWithImages(systemPrompt: String, userPrompt: String, imagePaths: List<String>): Flow<String> {
     if (!tryAutoRecover()) {
       Log.w(TAG, "Model not ready, cannot generate")
       return callbackFlow {
@@ -148,7 +155,7 @@ class LocalModelLoader(
 
       val inferenceJob = inferenceScope.launch {
         try {
-          engine.generateWithImages(prompt, imagePaths).collect { chunk ->
+          engine.generateWithImages(systemPrompt, userPrompt, imagePaths).collect { chunk ->
             trySend(chunk)
           }
         } catch (e: CancellationException) {

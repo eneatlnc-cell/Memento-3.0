@@ -129,7 +129,7 @@ fun SettingsScreen(
     Spacer(modifier = Modifier.height(32.dp))
 
     Text(
-      text = "Memento v2.0",
+      text = "Memento v3.1",
       style = MaterialTheme.typography.bodySmall,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -301,7 +301,7 @@ private fun AboutDialog(
     text = {
       Column {
         Text(
-          text = "Memento v2.0.0",
+          text = "Memento v3.1.0",
           style = MaterialTheme.typography.titleMedium,
         )
         Spacer(modifier = Modifier.height(8.dp))
@@ -312,7 +312,7 @@ private fun AboutDialog(
         )
         Spacer(modifier = Modifier.height(16.dp))
         Text(
-          text = "基于 Google AI Edge LiteRT-LM 引擎，端侧推理，数据不出设备。",
+          text = "基于 llama.cpp + libmtmd 引擎，Qwen3.5 端侧推理，数据不出设备。",
           style = MaterialTheme.typography.bodySmall,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

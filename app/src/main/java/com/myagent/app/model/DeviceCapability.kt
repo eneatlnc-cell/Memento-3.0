@@ -10,9 +10,9 @@ import java.io.FileReader
 /**
  * 设备能力检测 — SOC 型号 + 内存容量。
  *
- * 用于决定 LiteRT-LM 推理引擎后端选择：
- * - 骁龙 8 系列 + ≥12GB RAM → QNN NPU 加速
- * - 其他平台 → CPU 多线程
+ * 用于决定 llama.cpp 推理引擎后端选择：
+ * - 骁龙 8 系列 + ≥12GB RAM → Hexagon NPU + Adreno OpenCL 加速（n_gpu_layers=99）
+ * - 其他平台 → CPU 多线程（n_gpu_layers=0）
  *
  * 骁龙 8 系列检测逻辑：
  * 1. 读取 /proc/cpuinfo 中的 Hardware 字段

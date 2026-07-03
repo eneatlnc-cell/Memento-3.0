@@ -11,8 +11,8 @@ import java.io.FileOutputStream
 /**
  * 视频帧采样器 — 从视频中提取关键帧作为图片列表。
  *
- * 由于 LiteRT-LM 未暴露 Content.VideoFile 类型，采用帧采样替代方案：
- * MediaMetadataRetriever 提取帧 → 压缩为 JPEG → 作为多张图片传给 E4B。
+ * llama.cpp libmtmd 当前不直接接受视频输入，采用帧采样替代方案：
+ * MediaMetadataRetriever 提取帧 → 压缩为 JPEG → 作为多张图片传给 Qwen3.5。
  *
  * 限制：
  * - 视频最大 50MB

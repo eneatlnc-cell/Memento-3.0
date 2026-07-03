@@ -8,18 +8,19 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 
 /**
- * llama.cpp 推理引擎 — 替换 LiteRT-LM，对齐业务接口。
+ * llama.cpp 推理引擎 — 业务层与原生 C API 之间的桥接。
  *
- * 核心改进（相对 LiteRT-LM）：
+ * 核心能力：
  * - 用 llama.cpp + libmtmd，骁龙平台支持 Hexagon NPU + Adreno OpenCL 双后端
- * - 多模态走 libmtmd（取代 LiteRT-LM 的 Content.ImageFile），在非骁龙平台稳定
+ * - 多模态走 libmtmd，<__media__> 占位符由本类统一注入
  * - mmproj 强制 CPU（CVPR 2026 实测：OpenCL 跑 ViT 抖动大）
+ * - Qwen3.5 chat template 由本类的 buildQwenChatPrompt() 唯一构造
  *
  * 硬件适配：
  * - 骁龙 SM8450+ (8 Gen 1+) → n_gpu_layers=99，HTP/OpenCL 自动选择
  * - 其他平台 → n_gpu_layers=0，纯 CPU 多线程
  *
- * 线程安全：与 LiteRtEngine 相同，用 synchronized 保护 init/close/generate。
+ * 线程安全：用 synchronized 保护 init/close/generate。
  */
 class LlamaEngine(private val context: Context) {
   companion object {
@@ -40,7 +41,7 @@ class LlamaEngine(private val context: Context) {
    *
    * @param modelPath   主模型 GGUF 文件路径
    * @param mmprojPath  视觉投影器 GGUF 文件路径（多模态必需，null 则纯文本）
-   * @param maxTokens   预留参数（由 n_ctx 控制，此处保留兼容 LiteRtEngine 接口）
+   * @param maxTokens   预留参数（由 n_ctx 控制，当前未使用）
    * @return true 表示初始化成功
    */
   fun init(modelPath: String, mmprojPath: String? = null, maxTokens: Int = 512): Boolean =
@@ -67,7 +68,7 @@ class LlamaEngine(private val context: Context) {
         }
 
         // 2) 创建上下文
-        // KV Cache 根据 RAM 动态调整（与 LiteRtEngine 一致）
+        // KV Cache 根据 RAM 动态调整
         val nCtx = when {
           caps.totalRamGb >= 12 -> 4096
           caps.totalRamGb >= 8 -> 2048
@@ -105,19 +106,25 @@ class LlamaEngine(private val context: Context) {
 
   /**
    * 流式生成回复（纯文本）。
-   * 在 synchronized 块中快照 ctx 引用，避免与 close() 竞态。
+   *
+   * @param systemPrompt 系统提示词 + 记忆上下文（已由上层拼好），为空则省略 system 段
+   * @param userPrompt   用户本轮输入的纯文本（不含 chat template 标记）
+   *
+   * LlamaEngine 是 Qwen chat template 的唯一权威：所有 <|im_start|>/<|im_end|>
+   * 在这里构造，上层（ChatController/LocalModelLoader）只传语义内容。
    */
-  fun generate(prompt: String): Flow<String> {
+  fun generate(systemPrompt: String, userPrompt: String): Flow<String> {
     val ctxSnapshot = synchronized(this) { ctx }
     if (ctxSnapshot == 0L) {
       Log.e(TAG, "Context not initialized — cannot generate")
       return callbackFlow { close() }
     }
+    val fullPrompt = buildQwenChatPrompt(systemPrompt, userPrompt, imageCount = 0)
     return callbackFlow {
       try {
         LlamaNative.completion(
           ctx = ctxSnapshot,
-          prompt = prompt,
+          prompt = fullPrompt,
           maxTokens = 512,
           temperature = 0.7f,
           topP = 0.8f,
@@ -141,34 +148,25 @@ class LlamaEngine(private val context: Context) {
   /**
    * 多模态流式生成（文本 + 图片）。
    *
-   * 自动在 prompt 中插入 <__media__> 占位符（每张图一个），
-   * 并包装为 Qwen chat template 格式。
+   * @param systemPrompt 系统提示词 + 记忆上下文（已由上层拼好），为空则省略 system 段
+   * @param userPrompt   用户本轮输入的纯文本（不含 chat template 标记）
+   * @param imagePaths   图片绝对路径列表；每张图会在 user 段末尾插入一个 <__media__> 占位符
+   *
    * 如果 mmproj 未加载，回退为纯文本（不附带图片）。
    */
-  fun generateWithImages(text: String, imagePaths: List<String>): Flow<String> {
+  fun generateWithImages(systemPrompt: String, userPrompt: String, imagePaths: List<String>): Flow<String> {
     val ctxSnapshot = synchronized(this) { ctx }
     val mctxSnapshot = synchronized(this) { mctx }
     if (ctxSnapshot == 0L) {
       Log.e(TAG, "Context not initialized — cannot generate")
       return callbackFlow { close() }
     }
-    if (mctxSnapshot == 0L) {
-      Log.w(TAG, "mmproj not loaded, falling back to text-only")
-      return generate(text)
+    if (mctxSnapshot == 0L || imagePaths.isEmpty()) {
+      Log.w(TAG, "mmproj not loaded or no images, falling back to text-only")
+      return generate(systemPrompt, userPrompt)
     }
 
-    // 构造含 <__media__> 占位符的 prompt
-    // Qwen chat template: <|im_start|>user\n{text}\n<__media__>\n<__media__>\n...<|im_end|>\n<|im_start|>assistant\n
-    val mediaMarkers = imagePaths.joinToString("\n") { MMPROJ_MARKER }
-    val fullPrompt = buildString {
-      append("<|im_start|>user\n")
-      append(text)
-      if (imagePaths.isNotEmpty()) {
-        append("\n")
-        append(mediaMarkers)
-      }
-      append("<|im_end|>\n<|im_start|>assistant\n")
-    }
+    val fullPrompt = buildQwenChatPrompt(systemPrompt, userPrompt, imageCount = imagePaths.size)
 
     return callbackFlow {
       try {
@@ -194,6 +192,38 @@ class LlamaEngine(private val context: Context) {
         close(e)
       }
       awaitClose {}
+    }
+  }
+
+  /**
+   * 构造 Qwen3.5 chat template：
+   * ```
+   * <|im_start|>system
+   * {systemPrompt}<|im_end|>
+   * <|im_start|>user
+   * {userPrompt}
+   * <__media__>
+   * <__media__>
+   * ...<|im_end|>
+   * <|im_start|>assistant
+   * ```
+   * systemPrompt 为空时省略 system 段。imageCount=0 时不插占位符。
+   */
+  private fun buildQwenChatPrompt(systemPrompt: String, userPrompt: String, imageCount: Int): String {
+    return buildString {
+      if (systemPrompt.isNotBlank()) {
+        append("<|im_start|>system\n")
+        append(systemPrompt.trim())
+        append("<|im_end|>\n")
+      }
+      append("<|im_start|>user\n")
+      append(userPrompt)
+      if (imageCount > 0) {
+        append("\n")
+        repeat(imageCount) { append(MMPROJ_MARKER).append('\n') }
+      }
+      append("<|im_end|>\n")
+      append("<|im_start|>assistant\n")
     }
   }
 

@@ -6,12 +6,11 @@
 // - 多模态用 libmtmd（取代已废弃的 llava/clip 接口）
 // - mmproj 默认 use_gpu=false（CVPR 2026 实测：骁龙上 mmproj 跑 OpenCL 抖动大）
 //
-// 依赖的 .so（jniLibs/arm64-v8a/，由 Snapdragon toolchain docker 编译）：
-//   libggml.so / libggml-cpu.so / libggml-opencl.so / libggml-hexagon.so
-//   libggml-htp-v73.so / v75 / v79 / v81
-//   libllama.so / libmtmd.so
+// 依赖的 .so（jniLibs/arm64-v8a/）：
+//   libllama.so — 合体库（llama.rn 0.12.5 预编译，含 CPU + Hexagon + OpenCL 后端静态链接）
+//   libllama_jni.so — 本文件编译产物
 //
-// 头文件来源：编译 llama.cpp 后从 include/ 和 tools/mtmd/ 拷贝到 cpp/include/
+// 头文件来源：llama.rn npm 包的 cpp/ 目录拷贝到 cpp/include/
 
 #include <jni.h>
 #include <string>
@@ -117,7 +116,7 @@ Java_com_myagent_app_model_LlamaNative_contextInit(
   params.n_ctx = nCtx;
   params.n_threads = nThreads;
   params.n_batch = nBatch;
-  params.flash_attn = true;  // 骁龙实测：flash-attn 显著降低 KV 内存
+  params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;  // 骁龙实测：flash-attn 显著降低 KV 内存
   params.no_perf = true;     // 不收集性能计数器，省一点开销
 
   llama_context *ctx = llama_init_from_model(model, params);
@@ -218,7 +217,7 @@ Java_com_myagent_app_model_LlamaNative_mtmdInit(
   auto *model = reinterpret_cast<llama_model *>(jmodel);
   const char *path = env->GetStringUTFChars(jmmprojPath, nullptr);
 
-  mtmd_context_params params = mtmd_context_default_params();
+  mtmd_context_params params = mtmd_context_params_default();
   params.use_gpu = false;  // 骁龙实测：mmproj 不 offload 到 OpenCL 更稳（CVPR 2026）
 
   mtmd_context *mctx = mtmd_init_from_file(path, model, params);
@@ -267,7 +266,13 @@ Java_com_myagent_app_model_LlamaNative_completionWithImage(
   for (jsize i = 0; i < nImages; ++i) {
     jstring jpath = (jstring)env->GetObjectArrayElement(jimagePaths, i);
     const char *path = env->GetStringUTFChars(jpath, nullptr);
-    mtmd_bitmap *bmp = mtmd_helper_bitmap_init_from_file(mctx, path);
+    // mtmd_helper_bitmap_init_from_file 返回 wrapper 结构体（按值），
+    // wrapper.bitmap 才是真正的 mtmd_bitmap*；wrapper.video_ctx 仅视频场景非空
+    mtmd_helper_bitmap_wrapper wrapper = mtmd_helper_bitmap_init_from_file(mctx, path, false);
+    mtmd_bitmap *bmp = wrapper.bitmap;
+    if (wrapper.video_ctx != nullptr) {
+      mtmd_helper_video_free(wrapper.video_ctx);  // 图片场景不会进入这里
+    }
     env->ReleaseStringUTFChars(jpath, path);
     env->DeleteLocalRef(jpath);
     if (bmp == nullptr) {

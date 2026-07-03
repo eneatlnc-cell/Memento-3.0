@@ -86,8 +86,8 @@ class ChatController(
 
   /**
    * 将 content:// URI 复制到缓存目录，压缩后返回绝对文件路径。
-   * 图片传给 LiteRT-LM 需要绝对路径（Content.ImageFile）。
-   * 压缩至最大 1024x1024，JPEG 质量 80%，避免 E4B 视觉编码器处理失败。
+   * 图片传给 llama.cpp mtmd 需要绝对路径（mtmd_helper_bitmap_init_from_file）。
+   * 压缩至最大 1024x1024，JPEG 质量 80%，避免 Qwen3.5 视觉编码器处理失败。
    * 限制单张图片最大 50MB，防止 OOM。
    */
   private fun resolveImagePath(uri: Uri): String? {
@@ -240,15 +240,13 @@ class ChatController(
         val systemPrompt = PersonaManager.getSystemPrompt()
         val memoryContext = memoryManager.getFullContext()
 
-        val fullPrompt = buildString {
+        // system 段：人格 + 记忆（为空则 LlamaEngine 省略 system 段）
+        val systemBlock = buildString {
           append(systemPrompt)
           if (memoryContext.isNotEmpty()) {
             append("\n\n")
             append(memoryContext)
-            append("\n--- 当前对话 ---\n")
           }
-          append("用户: $promptText\n")
-          append("Memento: ")
         }
 
         // 多模态推理前校验图片有效性，避免损坏图片导致原生崩溃
@@ -260,7 +258,7 @@ class ChatController(
               false
             } else {
               // 预解码校验：BitmapFactory 解码失败则说明图片损坏/格式不支持，
-              // 避免传入 LiteRT-LM 原生层触发 SIGSEGV
+              // 避免传入 llama.cpp mtmd 原生层触发 SIGSEGV
               try {
                 val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(path, opts)
@@ -282,6 +280,7 @@ class ChatController(
         }
 
         // 流式推理 — 有图片时走多模态路径
+        // Qwen chat template 由 LlamaEngine 统一构造，这里只传语义内容
         val assistantId = UUID.randomUUID().toString()
         // 延迟添加助手消息：只有首 token 到达后才插入，避免 cancel 时残留空气泡
         var assistantAdded = false
@@ -289,9 +288,9 @@ class ChatController(
         val fullResponse = StringBuilder()
         val inferenceFlow = if (validPaths.isNotEmpty()) {
           Log.i(TAG, "Multimodal inference: text + ${validPaths.size} image(s)")
-          modelLoader.generateWithImages(fullPrompt, validPaths)
+          modelLoader.generateWithImages(systemBlock, promptText, validPaths)
         } else {
-          modelLoader.generate(fullPrompt)
+          modelLoader.generate(systemBlock, promptText)
         }
 
         // 流式输出节流：每 50ms 最多更新一次 StateFlow
@@ -358,7 +357,7 @@ class ChatController(
         _streamingText.value = null
         _isLoading.value = false
       } catch (t: Throwable) {
-        // 兜底：捕获原生层异常（如 LiteRT-LM 的 SIGSEGV 被转换为 Java 异常）
+        // 兜底：捕获原生层异常（如 llama.cpp 的 SIGSEGV 被转换为 Java 异常）
         Log.e(TAG, "Fatal inference error: ${t.javaClass.name} — ${t.message}")
         _errorText.value = "模型推理遇到严重错误，请重启应用"
         _streamingText.value = null
@@ -478,9 +477,9 @@ class ChatController(
   }
 
   /**
-   * 视频输入 — 帧采样后作为多张图片传给 E4B。
+   * 视频输入 — 帧采样后作为多张图片传给 Qwen3.5。
    *
-   * LiteRT-LM 未暴露 Content.VideoFile 类型，采用帧采样替代方案：
+   * llama.cpp libmtmd 当前不直接接受视频输入，采用帧采样替代方案：
    * MediaMetadataRetriever 提取前 5 秒的关键帧（每秒 3 帧），
    * 压缩为 JPEG 后作为 imagePaths 列表传给多模态引擎。
    */

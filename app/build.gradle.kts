@@ -24,14 +24,13 @@ android {
   }
 
   // 只编译我们自己的 JNI wrapper（libllama_jni.so），
-  // llama.cpp/ggml/mtmd 的 .so 由 Snapdragon toolchain 预编译后放 jniLibs
-  // 注意：放好 .so 和头文件后取消下方注释启用 native 构建
-  // externalNativeBuild {
-  //   cmake {
-  //     path = file("src/main/cpp/CMakeLists.txt")
-  //     version = "3.22.1"
-  //   }
-  // }
+  // libllama.so 是预编译合体库（llama.rn 0.12.5），直接放 jniLibs
+  externalNativeBuild {
+    cmake {
+      path = file("src/main/cpp/CMakeLists.txt")
+      version = "3.22.1"
+    }
+  }
 
   buildTypes {
     release {
@@ -66,8 +65,9 @@ android {
         )
     }
     jniLibs {
-      // HTP skel 库依赖动态符号，不能被 strip
-      doNotStrip += listOf("**/libggml-htp-*.so", "**/libggml-hexagon.so")
+      // libllama.so 是合体库（含 Hexagon NPU + OpenCL 后端静态链接），
+      // strip 可能破坏 HTP 后端的特殊段；libllama_jni.so 体量小无需保护
+      doNotStrip += listOf("**/libllama.so")
     }
   }
 

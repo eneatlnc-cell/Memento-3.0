@@ -50,20 +50,22 @@ class ModelInstaller(
     /** 视觉投影器文件名（mmproj BF16） */
     const val MMPROJ_FILE_NAME = "mmproj-BF16.gguf"
 
-    /** 主模型 SHA256 校验值（待用户提供，null 表示暂不校验） */
+    /**
+     * SHA256 校验值。
+     * 按设计：保留校验流程（Verifying 状态 + 通知文案），但默认 null → isFileReady 直接 return true，
+     * 不真算 hash（避免大文件 SHA 计算导致 OOM/ANR）。需要时填入即自动启用真校验。
+     */
     @Volatile var EXPECTED_MODEL_SHA256: String? = null
 
-    /** mmproj SHA256 校验值（待用户提供，null 表示暂不校验） */
     @Volatile var EXPECTED_MMPROJ_SHA256: String? = null
 
-    /** 公读 CDN 基地址（模型文件放在桶里，主模型和 mmproj 分别下载） */
-    @Volatile var PUBLIC_CDN_BASE: String = "https://memento.tos-cn-beijing.volces.com/"
+    /** 主模型公读直链（cstcloud 对象存储，已验证支持 HEAD + Accept-Ranges） */
+    @Volatile var MODEL_DOWNLOAD_URL: String =
+      "https://data.cstcloud.cn/api/file/download/file/a75e0442-38a2-4466-bb03-0a1554be4ef6-26e850cd938dc4760280749733031e8b"
 
-    /** 主模型公读 URL（可被覆盖） */
-    @Volatile var MODEL_DOWNLOAD_URL: String = PUBLIC_CDN_BASE + MODEL_FILE_NAME
-
-    /** mmproj 公读 URL（可被覆盖） */
-    @Volatile var MMPROJ_DOWNLOAD_URL: String = PUBLIC_CDN_BASE + MMPROJ_FILE_NAME
+    /** mmproj 公读直链 */
+    @Volatile var MMPROJ_DOWNLOAD_URL: String =
+      "https://data.cstcloud.cn/api/file/download/file/deb10d1c-592f-4c07-b06f-866966342770-d62a75fa19bed916d83954056eaba447"
 
     private const val BUFFER_SIZE = 8192
     private const val CONNECT_TIMEOUT_MS = 15_000
