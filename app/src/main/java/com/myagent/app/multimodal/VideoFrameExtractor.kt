@@ -130,9 +130,10 @@ object VideoFrameExtractor {
           null
         } ?: continue
 
+        var scaled: Bitmap? = null
         try {
           // 缩放至最大 1024 宽
-          val scaled = if (bitmap.width > 1024) {
+          scaled = if (bitmap.width > 1024) {
             val ratio = 1024f / bitmap.width
             Bitmap.createScaledBitmap(bitmap, 1024, (bitmap.height * ratio).toInt(), true)
           } else bitmap
@@ -142,12 +143,11 @@ object VideoFrameExtractor {
             scaled.compress(Bitmap.CompressFormat.JPEG, 80, out)
           }
           frames.add(frameFile.absolutePath)
-
-          // 释放 Bitmap 内存
-          if (scaled != bitmap) scaled.recycle()
         } catch (t: Throwable) {
           Log.w(TAG, "Frame $i save failed: ${t.message}")
         } finally {
+          // H-M5 修复：compress 抛异常时 scaled bitmap（scaled != bitmap）漏回收
+          if (scaled != null && scaled != bitmap) scaled.recycle()
           bitmap.recycle()
         }
       }

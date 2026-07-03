@@ -52,7 +52,7 @@ object DeviceCapability {
     val canUseNpu: Boolean,
   )
 
-  private var cached: Info? = null
+  @Volatile private var cached: Info? = null
 
   fun detect(context: Context): Info {
     cached?.let { return it }

@@ -29,6 +29,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,6 +41,9 @@ import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.myagent.app.ui.LocalSkinColors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -56,6 +60,8 @@ fun MessageBubble(
   val isUser = message.role == "user"
   val skinColors = LocalSkinColors.current
   val bubbleRadius = skinColors.bubbleRadius
+  // H-U2 修复：用于在点击事件中切到 IO 线程执行文件拷贝
+  val scope = rememberCoroutineScope()
 
   Box(
     modifier = Modifier.fillMaxWidth(),
@@ -91,7 +97,8 @@ fun MessageBubble(
           if (message.type == "image" || message.type == "video") {
             val ctx = LocalContext.current
             IconButton(
-              onClick = { saveToGallery(ctx, message) },
+              // H-U2 修复：在协程中切到 IO 线程执行文件拷贝，避免主线程同步拷贝多 MB 文件导致 ANR
+              onClick = { scope.launch { saveToGallery(ctx, message) } },
               modifier = Modifier.size(28.dp),
             ) {
               Icon(
@@ -263,7 +270,7 @@ private fun openWithSystemViewer(context: android.content.Context, uriString: St
  * 保存媒体文件到系统相册（Pictures/Memento）。
  * 优先使用 MediaStore API（Android 10+），兼容旧版本直接复制文件。
  */
-private fun saveToGallery(context: android.content.Context, message: ChatMessage) {
+private suspend fun saveToGallery(context: android.content.Context, message: ChatMessage) {
   val localPath = message.localPath
   if (localPath == null) {
     Toast.makeText(context, "文件路径不可用", Toast.LENGTH_SHORT).show()
@@ -292,8 +299,11 @@ private fun saveToGallery(context: android.content.Context, message: ChatMessage
         values,
       )
       if (uri != null) {
-        context.contentResolver.openOutputStream(uri)?.use { out ->
-          file.inputStream().use { it.copyTo(out) }
+        // H-U2 修复：文件拷贝移到 IO 线程，避免主线程同步拷贝多 MB 文件导致 ANR
+        withContext(Dispatchers.IO) {
+          context.contentResolver.openOutputStream(uri)?.use { out ->
+            file.inputStream().use { it.copyTo(out) }
+          }
         }
         Toast.makeText(context, "已保存到相册", Toast.LENGTH_SHORT).show()
       } else {
@@ -308,7 +318,10 @@ private fun saveToGallery(context: android.content.Context, message: ChatMessage
         "Memento",
       ).also { it.mkdirs() }
       val dest = File(destDir, file.name)
-      file.copyTo(dest, overwrite = true)
+      // H-U2 修复：文件拷贝移到 IO 线程，避免主线程同步拷贝多 MB 文件导致 ANR
+      withContext(Dispatchers.IO) {
+        file.copyTo(dest, overwrite = true)
+      }
       // 通知媒体扫描
       val intent = Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE).apply {
         data = Uri.fromFile(dest)

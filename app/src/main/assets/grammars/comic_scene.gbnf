@@ -17,8 +17,8 @@ root   ::= "{" ws "\"layout\":" ws layout ws "," ws
                "\"dialogue\":" ws dialogue ws
           "}"
 
-# ── 第一刀：layout enum 锁死 ──
-layout ::= "\"fullscreen\"" | "\"split\"" | "\"overlay\""
+# ── 第一刀：layout enum 锁死（漫剧只用 fullscreen） ──
+layout ::= "\"fullscreen\""
 
 # ── characters 数组 ──
 characters ::= "[" ws char? (ws "," ws char)* ws "]"
@@ -58,6 +58,7 @@ dialogue ::= "{" ws
 animation ::= "\"pop\"" | "\"fade\"" | "\"typewriter\"" | "\"slide\""
 
 # ── 基础类型 ──
-string  ::= "\"" ( [^"\\] | "\\" .)* "\""
+string  ::= "\"" ( [^"\\\n\r\t] | escape )* "\""
+escape  ::= "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
 number  ::= "-"? ([0-9] | [1-9] [0-9]*) ("." [0-9]+)?
 ws      ::= [ \t\n]*

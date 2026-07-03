@@ -10,6 +10,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -24,8 +25,8 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 class LocalModelLoader(
   private val context: Context,
-  private var modelPath: String?,
-  private var mmprojPath: String? = null,
+  @Volatile private var modelPath: String?,
+  @Volatile private var mmprojPath: String? = null,
 ) {
   companion object {
     private const val TAG = "LocalModelLoader"
@@ -124,8 +125,9 @@ class LocalModelLoader(
         inferenceScope.cancel()
         Log.e(TAG, "Inference timed out after ${INFERENCE_TIMEOUT_MS}ms")
         trySend("抱歉，模型推理超时了。可能是手机内存不足，请尝试重启 App")
-        // 超时后必须关闭引擎释放内存，否则模型权重持续占用
-        engine.close()
+        // C-N4 修复：engine.close() 现在安全等待推理退出（cancelCompletion + 引用计数等待）
+        // 在 IO 线程执行，避免 Thread.sleep 阻塞 Default 线程
+        withContext(Dispatchers.IO) { engine.close() }
         initialized = false
         close()
       }
@@ -175,8 +177,8 @@ class LocalModelLoader(
         inferenceScope.cancel()
         Log.e(TAG, "Inference with images timed out")
         trySend("抱歉，模型推理超时了。可能是手机内存不足，请尝试重启 App")
-        // 超时后必须关闭引擎释放内存，否则模型权重持续占用
-        engine.close()
+        // C-N4 修复：安全等待推理退出，在 IO 线程执行
+        withContext(Dispatchers.IO) { engine.close() }
         initialized = false
         close()
       }
@@ -226,7 +228,8 @@ class LocalModelLoader(
         inferenceScope.cancel()
         Log.e(TAG, "Scene generation timed out")
         trySend("抱歉，场景生成超时了。可能是手机内存不足，请尝试重启 App")
-        engine.close()
+        // C-N4 修复：安全等待推理退出，在 IO 线程执行
+        withContext(Dispatchers.IO) { engine.close() }
         initialized = false
         close()
       }

@@ -6,7 +6,6 @@ import com.myagent.app.activation.ActivationManager
 import com.myagent.app.activation.AuthApi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -14,7 +13,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -185,22 +183,22 @@ class ModelInstaller(
         val progressChannel = Channel<Pair<Long, Long>>(Channel.CONFLATED)
 
         val downloadJob = launch(Dispatchers.IO) {
-          withContext(NonCancellable) {
-            try {
-              // 下载主模型
-              var totalDownloaded = 0L
-              downloadFile(modelUrl, modelFile, modelFile.length(), modelSize) { downloaded, speed ->
-                progressChannel.trySend((totalDownloaded + downloaded) to speed)
-              }
-              totalDownloaded = modelSize
-
-              // 下载 mmproj
-              downloadFile(mmprojUrl, mmprojFile, mmprojFile.length(), mmprojSize) { downloaded, speed ->
-                progressChannel.trySend((totalDownloaded + downloaded) to speed)
-              }
-            } finally {
-              progressChannel.close()
+          // H-N2 修复：移除 withContext(NonCancellable)，使下载流的读取和写入可被 stopDownload() 取消。
+          // finally 中的 progressChannel.close() 为非挂起操作，无需 NonCancellable 即可正常执行。
+          try {
+            // 下载主模型
+            var totalDownloaded = 0L
+            downloadFile(modelUrl, modelFile, modelFile.length(), modelSize) { downloaded, speed ->
+              progressChannel.trySend((totalDownloaded + downloaded) to speed)
             }
+            totalDownloaded = modelSize
+
+            // 下载 mmproj
+            downloadFile(mmprojUrl, mmprojFile, mmprojFile.length(), mmprojSize) { downloaded, speed ->
+              progressChannel.trySend((totalDownloaded + downloaded) to speed)
+            }
+          } finally {
+            progressChannel.close()
           }
         }
 
@@ -242,6 +240,9 @@ class ModelInstaller(
     while (currentRetry <= MAX_RETRIES) {
       var downloadSucceeded = false
 
+      // H-N4 修复：downloadModel().collect 会挂起直到 flow 完成（其内部 coroutineScope 会
+      // 等待 downloadJob 结束）。配合 H-N2 移除 NonCancellable 后，collect 返回时上一轮
+      // 下载已彻底结束，不会与新轮 downloadFile 同写 modelFile。
       downloadModel().collect { state ->
         lastState = state
         when (state) {
@@ -319,12 +320,21 @@ class ModelInstaller(
         throw IOException("服务器返回错误：$responseCode")
       }
 
+      // H-N3 修复：服务端不支持 Range 请求时返回 200（完整文件）而非 206（部分内容）。
+      // 若仍以 append 模式写入，会导致 文件 = 旧分片 + 完整文件，破坏数据且大小校验可能漏过。
+      // 仅当返回 206 时才以 append 模式续传；返回 200 时删除旧分片并以覆盖模式从头写入。
+      val isPartial = responseCode == HttpURLConnection.HTTP_PARTIAL
+      val startBytes = if (isPartial) existingBytes else 0L
+      if (!isPartial && target.exists()) {
+        target.delete()
+      }
+
       input = connection.inputStream
-      output = FileOutputStream(target, existingBytes > 0)
+      output = FileOutputStream(target, isPartial)
 
       val buffer = ByteArray(BUFFER_SIZE)
       var bytesRead: Int
-      var downloaded = existingBytes
+      var downloaded = startBytes
       var lastReportTime = System.currentTimeMillis()
       var lastReportBytes = downloaded
 

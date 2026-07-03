@@ -104,10 +104,16 @@ class SecurePrefs(context: Context) {
   }
 
   private fun loadOrCreateInstanceId(): String {
-    val existing = plainPrefs.getString(instanceIdKey, null)?.trim()
-    if (!existing.isNullOrBlank()) return existing
+    getString(instanceIdKey)?.trim()?.let { if (it.isNotBlank()) return it }
+    plainPrefs.getString(instanceIdKey, null)?.trim()?.let { legacy ->
+      if (legacy.isNotBlank()) {
+        putString(instanceIdKey, legacy)
+        plainPrefs.edit { remove(instanceIdKey) }
+        return legacy
+      }
+    }
     val fresh = UUID.randomUUID().toString()
-    plainPrefs.edit { putString(instanceIdKey, fresh) }
+    putString(instanceIdKey, fresh)
     return fresh
   }
 }

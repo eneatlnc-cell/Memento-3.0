@@ -25,7 +25,6 @@ import android.widget.FrameLayout
 import kotlinx.coroutines.*
 import java.io.File
 import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
 
 /**
  * HyperFrames 端侧视频渲染器 — WebView + MediaCodec。
@@ -172,7 +171,7 @@ class HyperFramesRenderer(
       settings.apply {
         javaScriptEnabled = true
         domStorageEnabled = true
-        allowFileAccess = true
+        allowFileAccess = false
         blockNetworkLoads = true
       }
       webViewClient = WebViewClient()
@@ -289,18 +288,23 @@ class HyperFramesRenderer(
    */
   private suspend fun seekAnimation(wv: WebView, frameIndex: Int, fps: Int) {
     val timeInSeconds = frameIndex.toFloat() / fps
-    suspendCoroutine<Unit> { cont ->
-      wv.evaluateJavascript("""
-        (function() {
-          if (window.__timelines) {
-            window.__timelines.forEach(function(tl) {
-              tl.pause();
-              tl.seek($timeInSeconds);
-            });
-          }
-        })();
-      """.trimIndent()) { _ ->
-        cont.resume(Unit)
+    // C-M2 修复：suspendCancellableCoroutine + withTimeout，
+    // 防止 WebView 销毁/JS 异常/OEM 回调缺失时 continuation 永不 resume 导致渲染挂起。
+    withTimeout(2_000L) {
+      suspendCancellableCoroutine<Unit> { cont ->
+        wv.evaluateJavascript("""
+          (function() {
+            if (window.__timelines) {
+              window.__timelines.forEach(function(tl) {
+                tl.pause();
+                tl.seek($timeInSeconds);
+              });
+            }
+          })();
+        """.trimIndent()) { _ ->
+          if (cont.isActive) cont.resume(Unit)
+        }
+        cont.invokeOnCancellation { wv.stopLoading() }
       }
     }
   }
@@ -422,6 +426,7 @@ class BitmapToVideoEncoder(
   private var mediaMuxer: MediaMuxer? = null
   private var trackIndex: Int = -1
   private var muxerStarted = false
+  private var muxerStartFailed = false
   private var frameIndex = 0L
   private var state = State.UNINITIALIZED
   private var codecName: String = "unknown"
@@ -442,8 +447,11 @@ class BitmapToVideoEncoder(
     Log.i("BitmapEncoder", "Using codec: $codecName")
 
     val format = MediaFormat.createVideoFormat(mime, width, height).apply {
+      // H-M1 修复：使用 NV12（SemiPlanar）颜色格式，与 bitmapToYuv420SemiPlanar()
+      // 直接写入字节缓冲（Y 平面 + 交错 UV 平面）的方式匹配。YUV420Flexible 期望通过
+      // Image API 的 Y/U/V 分离平面写入，直接 put() 字节缓冲会导致色彩错误或编码器拒绝。
       setInteger(MediaFormat.KEY_COLOR_FORMAT,
-        MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+        MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar)
       setInteger(MediaFormat.KEY_BIT_RATE, 8_000_000)
       setInteger(MediaFormat.KEY_FRAME_RATE, fps)
       setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
@@ -465,6 +473,9 @@ class BitmapToVideoEncoder(
 
   fun encodeFrame(bitmap: Bitmap) {
     if (state != State.STARTED) return
+    if (muxerStartFailed) {
+      throw IllegalStateException("Muxer 未成功启动，无法继续编码")
+    }
     val codec = mediaCodec ?: return
     try {
       val inputBufferIndex = codec.dequeueInputBuffer(10_000)
@@ -498,6 +509,7 @@ class BitmapToVideoEncoder(
               muxerStarted = true
             } catch (e: Exception) {
               Log.e("BitmapEncoder", "Muxer addTrack/start failed: ${e.message}", e)
+              muxerStartFailed = true
             }
           }
           idx >= 0 -> {
@@ -529,40 +541,45 @@ class BitmapToVideoEncoder(
     return false
   }
 
-  fun stop() {
+  // H-M2 修复：改为 suspend 函数，并将 EOS 等待逻辑移到 Dispatchers.IO。
+  // 原实现在主线程 busy-wait 长达 2 秒，造成 ANR 风险。调用方 render() 已在
+  // suspend 上下文，可直接调用；withContext(Dispatchers.IO) 将忙等切换到 IO 线程。
+  suspend fun stop() {
     if (state != State.STARTED) {
       safeRelease()
       return
     }
 
-    try {
-      val codec = mediaCodec
-      if (codec != null) {
-        try {
-          val inputBufferIndex = codec.dequeueInputBuffer(10_000)
-          if (inputBufferIndex >= 0) {
-            codec.queueInputBuffer(
-              inputBufferIndex, 0, 0, 0,
-              MediaCodec.BUFFER_FLAG_END_OF_STREAM
-            )
+    withContext(Dispatchers.IO) {
+      try {
+        val codec = mediaCodec
+        if (codec != null) {
+          try {
+            val inputBufferIndex = codec.dequeueInputBuffer(10_000)
+            if (inputBufferIndex >= 0) {
+              codec.queueInputBuffer(
+                inputBufferIndex, 0, 0, 0,
+                MediaCodec.BUFFER_FLAG_END_OF_STREAM
+              )
+            }
+          } catch (e: Exception) {
+            Log.e("BitmapEncoder", "EOS signal failed: ${e.message}", e)
           }
-        } catch (e: Exception) {
-          Log.e("BitmapEncoder", "EOS signal failed: ${e.message}", e)
+          val deadline = System.currentTimeMillis() + 2000
+          var eosReceived = false
+          while (!eosReceived && System.currentTimeMillis() < deadline) {
+            eosReceived = drainEncoder()
+          }
+          if (!eosReceived) {
+            Log.w("BitmapEncoder", "EOS not received within deadline, stopping anyway")
+          }
         }
-        val deadline = System.currentTimeMillis() + 2000
-        var eosReceived = false
-        while (!eosReceived && System.currentTimeMillis() < deadline) {
-          eosReceived = drainEncoder()
-        }
-        if (!eosReceived) {
-          Log.w("BitmapEncoder", "EOS not received within deadline, stopping anyway")
-        }
+      } catch (e: Exception) {
+        Log.e("BitmapEncoder", "stop drain failed: ${e.message}", e)
+      } finally {
+        state = State.STOPPED
+        safeRelease()
       }
-    } catch (e: Exception) {
-      Log.e("BitmapEncoder", "stop drain failed: ${e.message}", e)
-    } finally {
-      state = State.STOPPED
-      safeRelease()
     }
   }
 

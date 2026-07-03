@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.util.Base64
 import android.util.Log
 import androidx.core.content.FileProvider
 import com.myagent.app.memory.MemoryManager
@@ -16,6 +17,7 @@ import com.myagent.app.model.LocalModelLoader
 import com.myagent.app.model.PersonaManager
 import com.myagent.app.multimodal.MultiModalDispatcher
 import com.myagent.app.multimodal.VideoFrameExtractor
+import com.myagent.app.scene.SceneDirector
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -60,11 +62,16 @@ class ChatController(
   val errorText: StateFlow<String?> = _errorText.asStateFlow()
 
   private var currentStreamJob: Job? = null
+  private var currentAssistantId: String? = null
+
+  // 漫剧导演（懒加载，首次生成场景时才实例化）
+  private val sceneDirector by lazy { SceneDirector(context, modelLoader) }
 
   // ── 多模态标记解析 ──
 
   private val imageTag = Regex("""^\[GEN_IMAGE:(.+?)]\s*""")
   private val videoTag = Regex("""^\[GEN_VIDEO:(.+?)]\s*""")
+  private val sceneTag = Regex("""^\[GEN_SCENE:(.+?)]\s*""")
 
   private data class GenAction(val type: String, val prompt: String)
 
@@ -78,6 +85,11 @@ class ChatController(
       val prompt = match.groupValues[1].trim()
       val clean = text.removeRange(match.range).trimStart()
       return clean to GenAction("video", prompt)
+    }
+    sceneTag.find(text)?.let { match ->
+      val prompt = match.groupValues[1].trim()
+      val clean = text.removeRange(match.range).trimStart()
+      return clean to GenAction("scene", prompt)
     }
     return text to null
   }
@@ -182,6 +194,26 @@ class ChatController(
     }
   }
 
+  /**
+   * 将 OutgoingAttachment（base64）解码为临时文件，供多模态推理使用。
+   */
+  private fun decodeAttachmentToTempFile(att: OutgoingAttachment): String? {
+    return try {
+      val bytes = Base64.decode(att.base64, Base64.DEFAULT)
+      val ext = when {
+        att.mimeType.contains("png", ignoreCase = true) -> "png"
+        att.mimeType.contains("webp", ignoreCase = true) -> "webp"
+        else -> "jpg"
+      }
+      val file = File(cacheDir, "att_${UUID.randomUUID()}.$ext")
+      FileOutputStream(file).use { it.write(bytes) }
+      file.absolutePath
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to decode attachment: ${e.message}")
+      null
+    }
+  }
+
   private fun Uri.getExtension(): String? {
     val name = contentResolver.query(this, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
       ?.use { cursor ->
@@ -209,8 +241,19 @@ class ChatController(
     )
     _messages.update { it + userMessage }
 
+    // M-7: 转发图片附件到推理（base64 → 临时文件），避免静默丢弃
+    val attachmentImagePaths = attachments.mapNotNull { att ->
+      if (att.type == "image" || att.mimeType.startsWith("image/", ignoreCase = true)) {
+        decodeAttachmentToTempFile(att)
+      } else {
+        Log.w(TAG, "Unsupported attachment type=${att.type} mime=${att.mimeType}, ignored")
+        null
+      }
+    }
+    val allImagePaths = imagePaths + attachmentImagePaths
+
     val memoryLabel = when {
-      imagePaths.isNotEmpty() -> "[图片]"
+      allImagePaths.isNotEmpty() -> "[图片]"
       trimmed.isEmpty() -> "[图片]"
       else -> trimmed
     }
@@ -218,7 +261,7 @@ class ChatController(
 
     startInference(
       promptText = trimmed.ifEmpty { "请描述这张图片" },
-      imagePaths = imagePaths,
+      imagePaths = allImagePaths,
     )
   }
 
@@ -282,6 +325,7 @@ class ChatController(
         // 流式推理 — 有图片时走多模态路径
         // Qwen chat template 由 LlamaEngine 统一构造，这里只传语义内容
         val assistantId = UUID.randomUUID().toString()
+        currentAssistantId = assistantId
         // 延迟添加助手消息：只有首 token 到达后才插入，避免 cancel 时残留空气泡
         var assistantAdded = false
 
@@ -362,6 +406,16 @@ class ChatController(
         _errorText.value = "模型推理遇到严重错误，请重启应用"
         _streamingText.value = null
         _isLoading.value = false
+      } finally {
+        // M-6: 确保所有路径（含外部取消）都复位加载/流式状态
+        _streamingText.value = null
+        _isLoading.value = false
+        // M-5: 清除 assistantId 并移除残留的空助手气泡
+        val aid = currentAssistantId
+        currentAssistantId = null
+        if (aid != null) {
+          _messages.update { msgs -> msgs.filterNot { it.id == aid && it.content.isEmpty() } }
+        }
       }
     }
   }
@@ -374,25 +428,30 @@ class ChatController(
       "image" -> {
         try {
           val bitmap = MultiModalDispatcher.generateImage(action.prompt)
-          // 保存到 cacheDir/images/ 子目录，匹配 FileProvider 的路径映射
-          val imagesDir = File(cacheDir, "images").also { it.mkdirs() }
-          val file = File(imagesDir, "gen_${UUID.randomUUID()}.png")
-          val ok = FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-          if (!ok || file.length() == 0L) {
-            throw Exception("图片写入失败，可能是磁盘空间不足")
+          // H-M4 修复：bitmap 必须回收，否则每张 ~4MB native 内存泄漏
+          try {
+            // 保存到 cacheDir/images/ 子目录，匹配 FileProvider 的路径映射
+            val imagesDir = File(cacheDir, "images").also { it.mkdirs() }
+            val file = File(imagesDir, "gen_${UUID.randomUUID()}.png")
+            val ok = FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            if (!ok || file.length() == 0L) {
+              throw Exception("图片写入失败，可能是磁盘空间不足")
+            }
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+            Log.i(TAG, "Generated image saved: ${file.absolutePath} (${file.length() / 1024}KB)")
+            val imageMsg = ChatMessage(
+              id = UUID.randomUUID().toString(),
+              role = "assistant",
+              content = action.prompt,
+              type = "image",
+              attachmentUri = uri.toString(),
+              attachmentMimeType = "image/png",
+              localPath = file.absolutePath,
+            )
+            _messages.update { it + imageMsg }
+          } finally {
+            bitmap.recycle()
           }
-          val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-          Log.i(TAG, "Generated image saved: ${file.absolutePath} (${file.length() / 1024}KB)")
-          val imageMsg = ChatMessage(
-            id = UUID.randomUUID().toString(),
-            role = "assistant",
-            content = action.prompt,
-            type = "image",
-            attachmentUri = uri.toString(),
-            attachmentMimeType = "image/png",
-            localPath = file.absolutePath,
-          )
-          _messages.update { it + imageMsg }
         } catch (e: Exception) {
           Log.e(TAG, "Image generation failed: ${e.message}", e)
           _errorText.value = "图片生成失败: ${e.message}"
@@ -432,6 +491,52 @@ class ChatController(
           _messages.update { it.map { m ->
             if (m.id == progressId) m.copy(content = "视频生成失败: ${e.message}") else m
           } }
+        }
+      }
+      "scene" -> {
+        val progressId = UUID.randomUUID().toString()
+        val progressMsg = ChatMessage(
+          id = progressId,
+          role = "assistant",
+          content = "正在生成漫剧「${action.prompt}」，请稍候...",
+        )
+        _messages.update { it + progressMsg }
+        try {
+          // SceneDirector.direct() 内部走 inferenceSemaphore 串行化，
+          // 与聊天回复共用同一 LlamaEngine 不会并发 llama_decode。
+          val outputDir = File(cacheDir, "scenes").also { it.mkdirs() }
+          val result = sceneDirector.direct(action.prompt, outputDir)
+          when (result) {
+            is SceneDirector.DirectorResult.Success -> {
+              val videoFile = result.videoFile
+              if (videoFile.length() == 0L || videoFile.length() < 1024) {
+                throw Exception("视频文件过小或为空，渲染可能失败")
+              }
+              val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", videoFile)
+              Log.i(TAG, "Scene generated: ${videoFile.absolutePath} (${videoFile.length() / 1024}KB)")
+              val sceneMsg = ChatMessage(
+                id = UUID.randomUUID().toString(),
+                role = "assistant",
+                content = action.prompt,
+                type = "video",
+                attachmentUri = uri.toString(),
+                attachmentMimeType = "video/mp4",
+                localPath = videoFile.absolutePath,
+              )
+              _messages.update { it.map { m -> if (m.id == progressId) sceneMsg else m } }
+            }
+            is SceneDirector.DirectorResult.Failure -> {
+              throw Exception(result.reason)
+            }
+          }
+        } catch (e: Exception) {
+          Log.e(TAG, "Scene generation failed: ${e.message}", e)
+          _messages.update { it.map { m ->
+            if (m.id == progressId) m.copy(content = "漫剧生成失败: ${e.message}") else m
+          } }
+        } finally {
+          // 无论成功失败都清理本次素材注册，避免下次场景残留
+          sceneDirector.clear()
         }
       }
     }
@@ -552,6 +657,12 @@ class ChatController(
     currentStreamJob = null
     _streamingText.value = null
     _isLoading.value = false
+    // M-5: 清除 assistantId 并移除残留的空助手气泡
+    val aid = currentAssistantId
+    currentAssistantId = null
+    if (aid != null) {
+      _messages.update { msgs -> msgs.filterNot { it.id == aid && it.content.isEmpty() } }
+    }
   }
 
   fun clearMessages() {

@@ -5,6 +5,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * 双层记忆管理器 — 短期清晰 + 长期模糊，永久记忆不删除。
@@ -35,6 +37,8 @@ class MemoryManager(context: Context) {
   private val db = MemoryDatabase.getInstance(context)
   private val dao = db.memoryDao()
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+  // M-20 修复：串行化 compactIfNeeded，防止并发压缩产生重复长期记忆与重复删除
+  private val compactMutex = Mutex()
 
   companion object {
     /** 短期记忆上限（超出触发压缩） */
@@ -135,28 +139,31 @@ class MemoryManager(context: Context) {
   // ── 内部：压缩逻辑 ──
 
   private suspend fun compactIfNeeded() {
-    val count = dao.getShortTermCount()
-    if (count <= SHORT_TERM_MAX) return
+    // M-20 修复：用 Mutex 串行化压缩，防止并发 compact 读取同一批记录导致重复摘要与重复删除
+    compactMutex.withLock {
+      val count = dao.getShortTermCount()
+      if (count <= SHORT_TERM_MAX) return@withLock
 
-    // 取最旧的 COMPACT_BATCH_SIZE 条
-    val oldest = dao.getOldestShortTerm(COMPACT_BATCH_SIZE)
-    if (oldest.isEmpty()) return
+      // 取最旧的 COMPACT_BATCH_SIZE 条
+      val oldest = dao.getOldestShortTerm(COMPACT_BATCH_SIZE)
+      if (oldest.isEmpty()) return@withLock
 
-    // 提取摘要
-    val summary = buildSummary(oldest)
+      // 提取摘要
+      val summary = buildSummary(oldest)
 
-    // 写入长期记忆
-    dao.insert(
-      MemoryEntity(
-        role = "system",
-        content = summary,
-        sessionId = "compacted",
-        memoryType = MemoryEntity.TYPE_LONG_TERM,
-      ),
-    )
+      // 写入长期记忆
+      dao.insert(
+        MemoryEntity(
+          role = "system",
+          content = summary,
+          sessionId = "compacted",
+          memoryType = MemoryEntity.TYPE_LONG_TERM,
+        ),
+      )
 
-    // 删除已压缩的短期记忆
-    dao.deleteByIds(oldest.map { it.id })
+      // 删除已压缩的短期记忆
+      dao.deleteByIds(oldest.map { it.id })
+    }
   }
 
   /**

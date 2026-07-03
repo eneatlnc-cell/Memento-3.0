@@ -71,7 +71,11 @@ class DownloadForegroundService : Service() {
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    when (intent?.action) {
+    if (intent == null) {
+      stopSelf()
+      return START_NOT_STICKY
+    }
+    when (intent.action) {
       ACTION_START -> {
         val retryCount = intent.getIntExtra(EXTRA_RETRY_COUNT, 0)
         startDownload(retryCount)

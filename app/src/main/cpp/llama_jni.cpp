@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 #include <cstring>
+#include <atomic>
 #include "llama.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
@@ -29,16 +30,50 @@
 class TokenEmitter {
 public:
   TokenEmitter(JNIEnv *env, jobject callback)
-    : env_(env), callback_(env->NewGlobalRef(callback)) {
-    jclass cls = env->GetObjectClass(callback);
+    : env_(env), callback_(nullptr), on_token_mid_(nullptr) {
+    if (callback == nullptr) {
+      LOGE("TokenCallback is null");
+      return;
+    }
+    callback_ = env->NewGlobalRef(callback);
+    if (callback_ == nullptr) {
+      LOGE("TokenCallback NewGlobalRef failed");
+      return;
+    }
+    jclass cls = env->GetObjectClass(callback_);
     on_token_mid_ = env->GetMethodID(cls, "onToken", "(Ljava/lang/String;Z)V");
+    env_->DeleteLocalRef(cls);
+    if (on_token_mid_ == nullptr) {
+      LOGE("TokenCallback.onToken method not found");
+      env_->DeleteGlobalRef(callback_);
+      callback_ = nullptr;
+    }
   }
-  ~TokenEmitter() { env_->DeleteGlobalRef(callback_); }
+  ~TokenEmitter() {
+    if (callback_ != nullptr) {
+      env_->DeleteGlobalRef(callback_);
+    }
+  }
 
-  void emit(const std::string &piece, bool isEos) {
+  // 返回 false 表示回调失败（Kotlin 抛异常 / NewStringUTF OOM / 无效回调），
+  // 调用方需中断生成循环，否则挂起异常在下一次 JNI 调用即未定义行为
+  bool emit(const std::string &piece, bool isEos) {
+    if (callback_ == nullptr || on_token_mid_ == nullptr) {
+      return false;
+    }
     jstring j = env_->NewStringUTF(piece.c_str());
+    if (j == nullptr) {
+      LOGE("NewStringUTF returned null");
+      return false;
+    }
     env_->CallVoidMethod(callback_, on_token_mid_, j, isEos ? JNI_TRUE : JNI_FALSE);
     env_->DeleteLocalRef(j);
+    if (env_->ExceptionCheck()) {
+      env_->ExceptionClear();
+      LOGE("TokenCallback threw exception, aborting generation");
+      return false;
+    }
+    return true;
   }
 
 private:
@@ -47,10 +82,37 @@ private:
   jmethodID on_token_mid_;
 };
 
+// M-19 修复：llama_token_to_piece 用动态缓冲，避免 128B 静态缓冲截断长 token
+static std::string token_to_piece_str(const llama_vocab *vocab, llama_token token) {
+  int needed = llama_token_to_piece(vocab, token, nullptr, 0, 0, false);
+  if (needed <= 0) {
+    return {};
+  }
+  std::vector<char> buf(needed + 1);
+  int len = llama_token_to_piece(vocab, token, buf.data(), (int32_t)buf.size(), 0, false);
+  if (len <= 0) {
+    return {};
+  }
+  return std::string(buf.data(), len);
+}
+
 // ── 全局状态：backend 只初始化一次 ──
 static bool g_backend_initialized = false;
 
+// C-N3/C-N4 修复：推理取消标志。
+// Memento 单推理流设计（同时只有一个 completion 在跑），全局标志足够。
+// 在每个 token 迭代开头检查，使阻塞的 JNI 推理可被中断，
+// 从而让 close() 能安全等待推理退出后再 free ctx，避免 UAF。
+static std::atomic<bool> g_cancel_flag{false};
+
 extern "C" {
+
+// ===== cancel =====
+
+JNIEXPORT void JNICALL
+Java_com_myagent_app_model_LlamaNative_cancelCompletion(JNIEnv *, jobject) {
+  g_cancel_flag.store(true);
+}
 
 // ===== backend =====
 
@@ -77,6 +139,10 @@ Java_com_myagent_app_model_LlamaNative_backendFree(JNIEnv *, jobject) {
 JNIEXPORT jlong JNICALL
 Java_com_myagent_app_model_LlamaNative_modelLoad(
   JNIEnv *env, jobject, jstring jpath, jint nGpuLayers, jboolean useHtp) {
+  if (jpath == nullptr) {
+    LOGE("modelLoad: jpath is null");
+    return 0;
+  }
   const char *path = env->GetStringUTFChars(jpath, nullptr);
   llama_model_params params = llama_model_default_params();
   params.n_gpu_layers = nGpuLayers;
@@ -88,13 +154,15 @@ Java_com_myagent_app_model_LlamaNative_modelLoad(
   (void)useHtp;  // 预留：未来若需显式 --device HTP0 再实现
 
   llama_model *model = llama_model_load_from_file(path, params);
-  env->ReleaseStringUTFChars(jpath, path);
 
+  // H-S4 修复：日志在 release 之前使用 path，避免 UAF
   if (model == nullptr) {
     LOGE("model load failed: %s", path);
+    env->ReleaseStringUTFChars(jpath, path);
     return 0;
   }
   LOGI("model loaded: %s (n_gpu_layers=%d)", path, nGpuLayers);
+  env->ReleaseStringUTFChars(jpath, path);
   return reinterpret_cast<jlong>(model);
 }
 
@@ -143,27 +211,36 @@ Java_com_myagent_app_model_LlamaNative_completion(
   JNIEnv *env, jobject, jlong jctx, jstring jprompt,
   jint maxTokens, jfloat temp, jfloat topP, jint topK,
   jobject jcallback) {
+  if (jprompt == nullptr) {
+    LOGE("completion: jprompt is null");
+    return;
+  }
   auto *ctx = reinterpret_cast<llama_context *>(jctx);
   if (ctx == nullptr) {
     LOGE("completion: null context");
     return;
   }
 
+  // 每次推理开始时重置取消标志
+  g_cancel_flag.store(false);
+
   const llama_vocab *vocab = llama_model_get_vocab(llama_get_model(ctx));
   const char *prompt = env->GetStringUTFChars(jprompt, nullptr);
   const size_t prompt_len = std::strlen(prompt);
 
   // 1) tokenize prompt
+  //    注意：ReleaseStringUTFChars 必须在最后一次使用 prompt 之后调用，
+  //    否则重试分支和后续日志会读到已释放内存（UAF）。
   std::vector<llama_token> tokens(prompt_len + 16);
   int n = llama_tokenize(vocab, prompt, (int32_t)prompt_len,
                          tokens.data(), (int32_t)tokens.size(),
                          true, true);
-  env->ReleaseStringUTFChars(jprompt, prompt);
   if (n < 0) {
     tokens.resize(-n);
     n = llama_tokenize(vocab, prompt, (int32_t)prompt_len,
                        tokens.data(), (int32_t)tokens.size(), true, true);
   }
+  env->ReleaseStringUTFChars(jprompt, prompt);
   if (n <= 0) {
     LOGE("tokenize failed");
     return;
@@ -186,18 +263,22 @@ Java_com_myagent_app_model_LlamaNative_completion(
 
   TokenEmitter emitter(env, jcallback);
   const llama_token eos = llama_vocab_eos(vocab);
-  char buf[128];
 
   // 4) 自回归生成
   for (int i = 0; i < maxTokens; ++i) {
+    // C-N3/C-N4 修复：检查取消标志，使 close() 能安全中断推理
+    if (g_cancel_flag.load()) {
+      LOGI("completion cancelled at token %d", i);
+      break;
+    }
     llama_token tok = llama_sampler_sample(sampler, ctx, -1);
     if (tok == eos) {
       emitter.emit("", true);
       break;
     }
-    int piece_len = llama_token_to_piece(vocab, tok, buf, sizeof(buf), 0, false);
-    if (piece_len > 0) {
-      emitter.emit(std::string(buf, piece_len), false);
+    std::string piece = token_to_piece_str(vocab, tok);
+    if (!piece.empty()) {
+      if (!emitter.emit(piece, false)) break;
     }
     llama_batch b = llama_batch_get_one(&tok, 1);
     if (llama_decode(ctx, b) != 0) {
@@ -214,6 +295,10 @@ Java_com_myagent_app_model_LlamaNative_completion(
 JNIEXPORT jlong JNICALL
 Java_com_myagent_app_model_LlamaNative_mtmdInit(
   JNIEnv *env, jobject, jlong jmodel, jstring jmmprojPath) {
+  if (jmmprojPath == nullptr) {
+    LOGE("mtmdInit: jmmprojPath is null");
+    return 0;
+  }
   auto *model = reinterpret_cast<llama_model *>(jmodel);
   const char *path = env->GetStringUTFChars(jmmprojPath, nullptr);
 
@@ -221,13 +306,15 @@ Java_com_myagent_app_model_LlamaNative_mtmdInit(
   params.use_gpu = false;  // 骁龙实测：mmproj 不 offload 到 OpenCL 更稳（CVPR 2026）
 
   mtmd_context *mctx = mtmd_init_from_file(path, model, params);
-  env->ReleaseStringUTFChars(jmmprojPath, path);
 
+  // H-S4 修复：日志在 release 之前使用 path，避免 UAF
   if (mctx == nullptr) {
     LOGE("mtmd_init_from_file failed: %s", path);
+    env->ReleaseStringUTFChars(jmmprojPath, path);
     return 0;
   }
   LOGI("mtmd ready: %s (use_gpu=false)", path);
+  env->ReleaseStringUTFChars(jmmprojPath, path);
   return reinterpret_cast<jlong>(mctx);
 }
 
@@ -250,12 +337,19 @@ Java_com_myagent_app_model_LlamaNative_completionWithImage(
   jstring jprompt, jobjectArray jimagePaths,
   jint maxTokens, jfloat temp, jfloat topP, jint topK,
   jobject jcallback) {
+  if (jprompt == nullptr) {
+    LOGE("completionWithImage: jprompt is null");
+    return;
+  }
   auto *ctx = reinterpret_cast<llama_context *>(jctx);
   auto *mctx = reinterpret_cast<mtmd_context *>(jmctx);
   if (ctx == nullptr || mctx == nullptr) {
     LOGE("completionWithImage: null ctx/mctx");
     return;
   }
+
+  // 每次推理开始时重置取消标志
+  g_cancel_flag.store(false);
 
   const llama_vocab *vocab = llama_model_get_vocab(llama_get_model(ctx));
   const char *prompt = env->GetStringUTFChars(jprompt, nullptr);
@@ -265,6 +359,10 @@ Java_com_myagent_app_model_LlamaNative_completionWithImage(
   jsize nImages = env->GetArrayLength(jimagePaths);
   for (jsize i = 0; i < nImages; ++i) {
     jstring jpath = (jstring)env->GetObjectArrayElement(jimagePaths, i);
+    if (jpath == nullptr) {
+      LOGE("completionWithImage: image path at index %d is null", (int)i);
+      continue;
+    }
     const char *path = env->GetStringUTFChars(jpath, nullptr);
     // mtmd_helper_bitmap_init_from_file 返回 wrapper 结构体（按值），
     // wrapper.bitmap 才是真正的 mtmd_bitmap*；wrapper.video_ctx 仅视频场景非空
@@ -273,13 +371,14 @@ Java_com_myagent_app_model_LlamaNative_completionWithImage(
     if (wrapper.video_ctx != nullptr) {
       mtmd_helper_video_free(wrapper.video_ctx);  // 图片场景不会进入这里
     }
-    env->ReleaseStringUTFChars(jpath, path);
-    env->DeleteLocalRef(jpath);
+    // H-S4 修复：日志在 release 之前使用 path，避免 UAF
     if (bmp == nullptr) {
       LOGE("bitmap load failed: %s", path);
     } else {
       bitmaps.push_back(bmp);
     }
+    env->ReleaseStringUTFChars(jpath, path);
+    env->DeleteLocalRef(jpath);
   }
   if (bitmaps.empty()) {
     LOGE("no valid images, abort multimodal");
@@ -329,17 +428,21 @@ Java_com_myagent_app_model_LlamaNative_completionWithImage(
 
   TokenEmitter emitter(env, jcallback);
   const llama_token eos = llama_vocab_eos(vocab);
-  char buf[128];
 
   for (int i = 0; i < maxTokens; ++i) {
+    // C-N3/C-N4 修复：检查取消标志，使 close() 能安全中断推理
+    if (g_cancel_flag.load()) {
+      LOGI("completionWithImage cancelled at token %d", i);
+      break;
+    }
     llama_token tok = llama_sampler_sample(sampler, ctx, -1);
     if (tok == eos) {
       emitter.emit("", true);
       break;
     }
-    int piece_len = llama_token_to_piece(vocab, tok, buf, sizeof(buf), 0, false);
-    if (piece_len > 0) {
-      emitter.emit(std::string(buf, piece_len), false);
+    std::string piece = token_to_piece_str(vocab, tok);
+    if (!piece.empty()) {
+      if (!emitter.emit(piece, false)) break;
     }
     llama_batch b = llama_batch_get_one(&tok, 1);
     if (llama_decode(ctx, b) != 0) {
@@ -374,11 +477,22 @@ Java_com_myagent_app_model_LlamaNative_completionWithGrammar(
   JNIEnv *env, jobject, jlong jctx, jstring jprompt, jstring jgrammar,
   jint maxTokens, jfloat temp, jfloat topP, jint topK,
   jobject jcallback) {
+  if (jprompt == nullptr) {
+    LOGE("completionWithGrammar: jprompt is null");
+    return;
+  }
+  if (jgrammar == nullptr) {
+    LOGE("completionWithGrammar: jgrammar is null");
+    return;
+  }
   auto *ctx = reinterpret_cast<llama_context *>(jctx);
   if (ctx == nullptr) {
     LOGE("completionWithGrammar: null context");
     return;
   }
+
+  // 每次推理开始时重置取消标志
+  g_cancel_flag.store(false);
 
   const llama_vocab *vocab = llama_model_get_vocab(llama_get_model(ctx));
   const char *prompt = env->GetStringUTFChars(jprompt, nullptr);
@@ -386,16 +500,18 @@ Java_com_myagent_app_model_LlamaNative_completionWithGrammar(
   const size_t prompt_len = std::strlen(prompt);
 
   // 1) tokenize prompt
+  //    注意：ReleaseStringUTFChars 必须在最后一次使用 prompt 之后调用，
+  //    否则重试分支会读到已释放内存（UAF）。
   std::vector<llama_token> tokens(prompt_len + 16);
   int n = llama_tokenize(vocab, prompt, (int32_t)prompt_len,
                          tokens.data(), (int32_t)tokens.size(),
                          true, true);
-  env->ReleaseStringUTFChars(jprompt, prompt);
   if (n < 0) {
     tokens.resize(-n);
     n = llama_tokenize(vocab, prompt, (int32_t)prompt_len,
                        tokens.data(), (int32_t)tokens.size(), true, true);
   }
+  env->ReleaseStringUTFChars(jprompt, prompt);
   if (n <= 0) {
     LOGE("tokenize failed (grammar)");
     env->ReleaseStringUTFChars(jgrammar, grammar);
@@ -432,18 +548,22 @@ Java_com_myagent_app_model_LlamaNative_completionWithGrammar(
 
   TokenEmitter emitter(env, jcallback);
   const llama_token eos = llama_vocab_eos(vocab);
-  char buf[128];
 
   // 4) 自回归生成（grammar 自动约束每个 token 合法）
   for (int i = 0; i < maxTokens; ++i) {
+    // C-N3/C-N4 修复：检查取消标志，使 close() 能安全中断推理
+    if (g_cancel_flag.load()) {
+      LOGI("completionWithGrammar cancelled at token %d", i);
+      break;
+    }
     llama_token tok = llama_sampler_sample(sampler, ctx, -1);
     if (tok == eos) {
       emitter.emit("", true);
       break;
     }
-    int piece_len = llama_token_to_piece(vocab, tok, buf, sizeof(buf), 0, false);
-    if (piece_len > 0) {
-      emitter.emit(std::string(buf, piece_len), false);
+    std::string piece = token_to_piece_str(vocab, tok);
+    if (!piece.empty()) {
+      if (!emitter.emit(piece, false)) break;
     }
     llama_batch b = llama_batch_get_one(&tok, 1);
     if (llama_decode(ctx, b) != 0) {

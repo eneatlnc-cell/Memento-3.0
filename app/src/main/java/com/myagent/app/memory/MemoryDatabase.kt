@@ -75,7 +75,7 @@ abstract class MemoryDatabase : RoomDatabase() {
       return Room
         .databaseBuilder(wrappedContext, MemoryDatabase::class.java, DB_NAME)
         .addMigrations(MIGRATION_1_2)
-        .fallbackToDestructiveMigration()
+        .fallbackToDestructiveMigrationOnDowngrade()
         .build()
     }
 

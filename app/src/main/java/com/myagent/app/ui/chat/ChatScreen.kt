@@ -34,7 +34,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -68,19 +72,26 @@ fun ChatScreen(
   val skinColors = LocalSkinColors.current
 
   // 自动滚动到最新消息 — 仅当用户在底部附近时自动滚动，避免打断用户回看历史消息
-  LaunchedEffect(messages.size, streamingText) {
-    if (messages.isNotEmpty()) {
-      val layout = listState.layoutInfo
-      val lastVisible = layout.visibleItemsInfo.lastOrNull()
-      val isAtBottom = lastVisible != null && lastVisible.index >= messages.size - 2
-      if (isAtBottom) {
-        listState.scrollToItem(messages.size - 1)
+  // L-9: 用 snapshotFlow 监听变化，避免每 token 重启 LaunchedEffect 造成流式卡顿
+  LaunchedEffect(Unit) {
+    snapshotFlow { messages.size to streamingText }.collect {
+      if (messages.isNotEmpty()) {
+        val layout = listState.layoutInfo
+        val lastVisible = layout.visibleItemsInfo.lastOrNull()
+        val isAtBottom = lastVisible != null && lastVisible.index >= messages.size - 2
+        if (isAtBottom) {
+          listState.scrollToItem(messages.size - 1)
+        }
       }
     }
   }
 
   // 主动搭话 — 首次进入聊天页时检查
+  // M-8: 用 rememberSaveable 标记是否已注入，避免切回 Chat 标签时重复注入问候
+  var greetingInjected by rememberSaveable { mutableStateOf(false) }
   LaunchedEffect(Unit) {
+    if (greetingInjected) return@LaunchedEffect
+    greetingInjected = true
     val proactiveMsg = viewModel.checkProactive(isAppLaunch = true)
     if (proactiveMsg != null) {
       // 搭话作为系统消息插入，不触发模型推理

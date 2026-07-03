@@ -37,7 +37,7 @@ object AuthApi {
   /** 设置后台端点，供外部初始化时调用 */
   fun setEndpoint(url: String) {
     ServerlessEndpoint = url.trimEnd('/')
-    Log.i(TAG, "Auth endpoint set: $ServerlessEndpoint")
+    Log.i(TAG, "Auth endpoint set: ${hostOf(ServerlessEndpoint)}")
   }
 
   /**
@@ -95,6 +95,10 @@ object AuthApi {
 
   // ── 内部 HTTP ──
 
+  private fun hostOf(urlStr: String?): String =
+    if (urlStr.isNullOrEmpty()) "unknown"
+    else runCatching { URL(urlStr).host }.getOrNull() ?: "unknown"
+
   private fun post(urlStr: String, body: String): JSONObject? {
     var connection: HttpURLConnection? = null
     try {
@@ -109,13 +113,13 @@ object AuthApi {
       OutputStreamWriter(connection.outputStream).use { it.write(body) }
       val code = connection.responseCode
       if (code !in 200..299) {
-        Log.w(TAG, "POST $urlStr → HTTP $code")
+        Log.w(TAG, "POST ${hostOf(urlStr)} → HTTP $code")
         return null
       }
       val text = BufferedReader(InputStreamReader(connection.inputStream)).readText()
       return JSONObject(text)
     } catch (e: Exception) {
-      Log.e(TAG, "POST $urlStr failed: ${e.message}")
+      Log.e(TAG, "POST ${hostOf(urlStr)} failed: ${e.message}")
       return null
     } finally {
       connection?.disconnect()

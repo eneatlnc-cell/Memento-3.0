@@ -51,8 +51,13 @@ class MainViewModel(
     runtimeRef.value = runtime
     syncDownloadState()
     // 执行所有排队中的操作
-    val actions = pendingActions.toList()
-    pendingActions.clear()
+    // H-N1 修复：pendingActions 跨线程访问（主线程 add，Default 线程 toList+clear），
+    // 用 synchronized 保护以防止 ConcurrentModificationException 与丢任务
+    val actions = synchronized(pendingActions) {
+      val list = pendingActions.toList()
+      pendingActions.clear()
+      list
+    }
     actions.forEach { it() }
     return runtime
   }
@@ -191,7 +196,8 @@ class MainViewModel(
       val runtime = runtimeRef.value
       if (runtime == null) {
         Log.w("MainViewModel", "Runtime not ready, queueing image for later")
-        pendingActions.add { runtimeRef.value?.sendImage(uri.toString(), caption) }
+        // H-N1 修复：加锁保护 pendingActions 的并发访问
+        synchronized(pendingActions) { pendingActions.add { runtimeRef.value?.sendImage(uri.toString(), caption) } }
         queueRuntimeStartup()
         return
       }
@@ -206,7 +212,8 @@ class MainViewModel(
       val runtime = runtimeRef.value
       if (runtime == null) {
         Log.w("MainViewModel", "Runtime not ready, queueing video for later")
-        pendingActions.add { runtimeRef.value?.sendVideo(uri.toString(), caption) }
+        // H-N1 修复：加锁保护 pendingActions 的并发访问
+        synchronized(pendingActions) { pendingActions.add { runtimeRef.value?.sendVideo(uri.toString(), caption) } }
         queueRuntimeStartup()
         return
       }

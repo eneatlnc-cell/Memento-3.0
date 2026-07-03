@@ -1,5 +1,7 @@
 package com.myagent.app.scene
 
+import java.util.concurrent.atomic.AtomicInteger
+
 /**
  * 动态素材注册表 —— 运行时把用户输入的图片/视频关键帧注册为临时素材。
  *
@@ -20,41 +22,47 @@ class AssetRegistry {
   )
 
   private val assets = mutableListOf<Asset>()
-  private var nextId = 0
+  private val nextId = AtomicInteger(0)
 
   /** 注册一个素材，返回分配的 assetRef */
   fun register(filePath: String, description: String): String {
-    val ref = "user_media_$nextId"
-    nextId++
-    assets.add(Asset(ref, filePath, description))
+    val ref = "user_media_${nextId.getAndIncrement()}"
+    synchronized(this) {
+      assets.add(Asset(ref, filePath, description))
+    }
     return ref
   }
 
   /** 按 assetRef 查找素材文件路径（渲染器调用） */
-  fun resolve(assetRef: String): Asset? = assets.firstOrNull { it.ref == assetRef }
+  fun resolve(assetRef: String): Asset? = synchronized(this) {
+    assets.firstOrNull { it.ref == assetRef }
+  }
 
   /** 清空所有注册的素材（场景生成完成后调用，释放引用） */
   fun clear() {
-    assets.clear()
-    nextId = 0
+    synchronized(this) {
+      assets.clear()
+      nextId.set(0)
+    }
   }
 
   /**
    * 构造注入 prompt 的素材描述文本。
    * 让 LLM 知道每个 assetRef 对应什么内容，零额外推理成本。
    */
-  fun buildPromptDictionary(): String {
+  fun buildPromptDictionary(): String = synchronized(this) {
     if (assets.isEmpty()) {
-      return "（本次无素材，请根据用户描述用纯文字构思场景）"
-    }
-    return buildString {
-      append("可用素材（assetRef 只能从以下列表选）：\n")
-      assets.forEach { a ->
-        append("- ${a.ref}（${a.description}）\n")
+      "（本次无素材，请根据用户描述用纯文字构思场景）"
+    } else {
+      buildString {
+        append("可用素材（assetRef 只能从以下列表选）：\n")
+        assets.forEach { a ->
+          append("- ${a.ref}（${a.description}）\n")
+        }
       }
     }
   }
 
   /** 是否已注册素材 */
-  fun hasAssets(): Boolean = assets.isNotEmpty()
+  fun hasAssets(): Boolean = synchronized(this) { assets.isNotEmpty() }
 }

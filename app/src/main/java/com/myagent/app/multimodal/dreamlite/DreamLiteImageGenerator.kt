@@ -5,9 +5,9 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.PixelFormat
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.text.TextUtils
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -141,13 +141,7 @@ class DreamLiteImageGenerator(
 
     // 3. 关键：通过 WindowManager 挂载到实际窗口
     try {
-      val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        // API 26+ 使用 TYPE_APPLICATION_OVERLAY 需要权限，改用 TYPE_APPLICATION_PANEL
-        // 虽然 deprecated 但 Android 12+ 仍然可用
-        WindowManager.LayoutParams.TYPE_APPLICATION_PANEL
-      } else {
-        WindowManager.LayoutParams.TYPE_APPLICATION_PANEL
-      }
+      val type = WindowManager.LayoutParams.TYPE_APPLICATION_PANEL
       val params = WindowManager.LayoutParams(
         width, height,
         type,
@@ -269,7 +263,8 @@ class DreamLiteImageGenerator(
     height: Int,
   ): String {
     val theme = pickTheme(prompt, style)
-    val title = formatTitle(prompt)
+    // H-M6 修复：prompt 来自 LLM 输出，未 HTML 转义可注入 </h1><style>...</style>
+    val title = TextUtils.htmlEncode(formatTitle(prompt))
 
     return """
 <!DOCTYPE html>
@@ -465,7 +460,7 @@ body {
   }
 
   private fun createFallbackBitmap(prompt: String): Bitmap {
-    val bitmap = Bitmap.createBitmap(512, 512, Bitmap.Config.ARGB_8888)
+    val bitmap = Bitmap.createBitmap(1024, 1024, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
     canvas.drawColor(0xFF1A1A2E.toInt())
     val paint = android.graphics.Paint().apply {
@@ -474,8 +469,8 @@ body {
       textAlign = android.graphics.Paint.Align.CENTER
       isAntiAlias = true
     }
-    canvas.drawText(formatTitle(prompt), 256f, 250f, paint)
-    canvas.drawText("Memento · 端侧渲染", 256f, 290f, paint)
+    canvas.drawText(formatTitle(prompt), 512f, 500f, paint)
+    canvas.drawText("Memento · 端侧渲染", 512f, 580f, paint)
     return bitmap
   }
 }

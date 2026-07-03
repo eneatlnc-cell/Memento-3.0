@@ -46,6 +46,8 @@ fun OnboardingFlow(
     }
   }
 
+  val retryCount by viewModel.downloadRetryCount.collectAsState()
+
   Surface(modifier = modifier) {
     ModelDownloadScreen(
       state = downloadState,
@@ -55,7 +57,7 @@ fun OnboardingFlow(
       onRetry = {
         viewModel.resetModelDownload()
       },
-      retryCount = viewModel.downloadRetryCount.value,
+      retryCount = retryCount,
     )
   }
 }

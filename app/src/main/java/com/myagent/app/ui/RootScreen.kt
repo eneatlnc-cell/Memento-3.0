@@ -69,16 +69,6 @@ fun RootScreen(viewModel: MainViewModel) {
   // 不再依赖 downloadState 做回退 — 修复"模型未安装也能进入主界面"的 bug
   val modelReady = modelFileExists
 
-  // Splash 状态：runtime 尚未初始化时显示启动画面
-  var showSplash by remember { mutableStateOf(true) }
-  LaunchedEffect(runtimeInitialized) {
-    if (runtimeInitialized) {
-      // 给用户一点时间看到 Memento 品牌
-      delay(800)
-      showSplash = false
-    }
-  }
-
   val startDestination = when {
     !welcomeDone -> Routes.WELCOME
     !isActivated -> Routes.ACTIVATION
@@ -156,8 +146,10 @@ private fun SplashScreen(
   onReady: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
-  // runtime 初始化完成后自动跳转
+  // H-U1 修复：原 delay(800) 写在从未被读取的 showSplash 上（死代码），导致 splash 一进入即跳转；
+  // 将 delay 移到此处，让品牌画面实际展示 800ms 再调用 onReady()
   LaunchedEffect(Unit) {
+    delay(800)
     onReady()
   }
 

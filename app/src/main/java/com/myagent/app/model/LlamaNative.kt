@@ -43,6 +43,12 @@ object LlamaNative {
   external fun backendInit()
   external fun backendFree()
 
+  // ── cancel ──
+  // 设置全局取消标志，使正在运行的 completion 在下一个 token 迭代退出。
+  // 用于 close() 安全等待推理结束，避免并发 free 导致 UAF。
+
+  external fun cancelCompletion()
+
   // ── model ──
   // 返回 0 表示失败
 

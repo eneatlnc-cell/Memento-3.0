@@ -5,6 +5,9 @@ import android.util.Log
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * llama.cpp 推理引擎 — 业务层与原生 C API 之间的桥接。
@@ -19,17 +22,30 @@ import kotlinx.coroutines.flow.callbackFlow
  * - 骁龙 SM8450+ (8 Gen 1+) → n_gpu_layers=99，HTP/OpenCL 自动选择
  * - 其他平台 → n_gpu_layers=0，纯 CPU 多线程
  *
- * 线程安全：用 synchronized 保护 init/close/generate。
+ * 线程安全（C-N3/C-N4 修复）：
+ * - activeInferences 引用计数跟踪正在运行的 JNI 推理
+ * - close() 先通过 cancelCompletion() 信号中断推理，再等待计数归零，最后 free ctx
+ * - closing 标志阻止新推理在关闭过程中启动
+ * - 这避免了"JNI 推理运行中 close() 释放 ctx"的 UAF
  */
 class LlamaEngine(private val context: Context) {
   companion object {
     private const val TAG = "LlamaEngine"
     private const val MMPROJ_MARKER = "<__media__>"  // mtmd 默认占位符
+    private const val CLOSE_WAIT_MS = 3000L  // close() 等待推理退出的最长时间
   }
 
   @Volatile private var model: Long = 0L
   @Volatile private var ctx: Long = 0L
   @Volatile private var mctx: Long = 0L  // mtmd 上下文（0 表示无多模态）
+
+  // C-N3 修复：引用计数 + closing 标志
+  private val activeInferences = AtomicInteger(0)
+  @Volatile private var closing = false
+
+  // 串行化 JNI 推理：同一 ctx 上并发 llama_decode 会损坏 KV cache。
+  // 场景生成（SceneDirector）与聊天回复共用同一引擎，必须串行执行。
+  private val inferenceSemaphore = Semaphore(1)
 
   /** 当前使用的后端（用于日志/诊断） */
   var activeBackend: String = "unknown"
@@ -38,17 +54,20 @@ class LlamaEngine(private val context: Context) {
   /**
    * 初始化引擎并加载模型。
    *
+   * C-N3 修复：init() 不再直接 closeInternal()，而是走 safeClose() 安全等待
+   * 正在运行的推理退出后再释放旧 ctx，避免 reload 时的 UAF。
+   *
    * @param modelPath   主模型 GGUF 文件路径
    * @param mmprojPath  视觉投影器 GGUF 文件路径（多模态必需，null 则纯文本）
    * @param maxTokens   预留参数（由 n_ctx 控制，当前未使用）
    * @return true 表示初始化成功
    */
-  fun init(modelPath: String, mmprojPath: String? = null, maxTokens: Int = 512): Boolean =
-    synchronized(this) {
-      try {
-        // 防止重复初始化
-        closeInternal()
+  fun init(modelPath: String, mmprojPath: String? = null, maxTokens: Int = 512): Boolean {
+    // 安全关闭旧引擎（等待推理退出），再初始化新的
+    safeClose()
 
+    return synchronized(this) {
+      try {
         LlamaNative.ensureLoaded()
         LlamaNative.backendInit()
 
@@ -102,6 +121,7 @@ class LlamaEngine(private val context: Context) {
         return false
       }
     }
+  }
 
   /**
    * 流式生成回复（纯文本）。
@@ -113,32 +133,41 @@ class LlamaEngine(private val context: Context) {
    * 在这里构造，上层（ChatController/LocalModelLoader）只传语义内容。
    */
   fun generate(systemPrompt: String, userPrompt: String): Flow<String> {
-    val ctxSnapshot = synchronized(this) { ctx }
-    if (ctxSnapshot == 0L) {
-      Log.e(TAG, "Context not initialized — cannot generate")
-      return callbackFlow { close() }
-    }
     val fullPrompt = buildQwenChatPrompt(systemPrompt, userPrompt, imageCount = 0)
     return callbackFlow {
-      try {
-        LlamaNative.completion(
-          ctx = ctxSnapshot,
-          prompt = fullPrompt,
-          maxTokens = 512,
-          temperature = 0.7f,
-          topP = 0.8f,
-          topK = 20,
-          callback = object : LlamaNative.TokenCallback {
-            override fun onToken(piece: String, isEos: Boolean) {
-              if (piece.isNotEmpty()) trySend(piece)
-              if (isEos) close()
-            }
-          },
-        )
-        if (!isClosedForSend) close()
-      } catch (e: Exception) {
-        Log.e(TAG, "Generate error: ${e.message}", e)
-        close(e)
+      // 串行化 JNI 推理 + 原子 check-and-increment，防止并发 llama_decode 损坏 KV cache
+      inferenceSemaphore.withPermit {
+        val ctxSnapshot = synchronized(this@LlamaEngine) {
+          if (closing || ctx == 0L) 0L
+          else { activeInferences.incrementAndGet(); ctx }
+        }
+        if (ctxSnapshot == 0L) {
+          Log.e(TAG, "Engine closing or not initialized — cannot generate")
+          close()
+          return@withPermit
+        }
+        try {
+          LlamaNative.completion(
+            ctx = ctxSnapshot,
+            prompt = fullPrompt,
+            maxTokens = 512,
+            temperature = 0.7f,
+            topP = 0.8f,
+            topK = 20,
+            callback = object : LlamaNative.TokenCallback {
+              override fun onToken(piece: String, isEos: Boolean) {
+                if (piece.isNotEmpty()) trySend(piece)
+                if (isEos) close()
+              }
+            },
+          )
+          if (!isClosedForSend) close()
+        } catch (e: Exception) {
+          Log.e(TAG, "Generate error: ${e.message}", e)
+          close(e)
+        } finally {
+          activeInferences.decrementAndGet()
+        }
       }
       awaitClose {}
     }
@@ -154,41 +183,56 @@ class LlamaEngine(private val context: Context) {
    * 如果 mmproj 未加载，回退为纯文本（不附带图片）。
    */
   fun generateWithImages(systemPrompt: String, userPrompt: String, imagePaths: List<String>): Flow<String> {
-    val ctxSnapshot = synchronized(this) { ctx }
-    val mctxSnapshot = synchronized(this) { mctx }
-    if (ctxSnapshot == 0L) {
-      Log.e(TAG, "Context not initialized — cannot generate")
-      return callbackFlow { close() }
-    }
-    if (mctxSnapshot == 0L || imagePaths.isEmpty()) {
+    // 早检查：无多模态或无图片时直接回退到纯文本（不占用 semaphore）
+    if (mctx == 0L || imagePaths.isEmpty()) {
       Log.w(TAG, "mmproj not loaded or no images, falling back to text-only")
       return generate(systemPrompt, userPrompt)
     }
-
     val fullPrompt = buildQwenChatPrompt(systemPrompt, userPrompt, imageCount = imagePaths.size)
-
     return callbackFlow {
-      try {
-        LlamaNative.completionWithImage(
-          ctx = ctxSnapshot,
-          mctx = mctxSnapshot,
-          prompt = fullPrompt,
-          imagePaths = imagePaths.toTypedArray(),
-          maxTokens = 512,
-          temperature = 0.7f,
-          topP = 0.8f,
-          topK = 20,
-          callback = object : LlamaNative.TokenCallback {
-            override fun onToken(piece: String, isEos: Boolean) {
-              if (piece.isNotEmpty()) trySend(piece)
-              if (isEos) close()
-            }
-          },
-        )
-        if (!isClosedForSend) close()
-      } catch (e: Exception) {
-        Log.e(TAG, "Generate with images error: ${e.message}", e)
-        close(e)
+      inferenceSemaphore.withPermit {
+        // 在锁内原子检查 closing + ctx + mctx，并递增引用计数
+        val ctxSnapshot: Long
+        val mctxSnapshot: Long
+        synchronized(this@LlamaEngine) {
+          if (closing || ctx == 0L || mctx == 0L) {
+            ctxSnapshot = 0L
+            mctxSnapshot = 0L
+          } else {
+            activeInferences.incrementAndGet()
+            ctxSnapshot = ctx
+            mctxSnapshot = mctx
+          }
+        }
+        if (ctxSnapshot == 0L || mctxSnapshot == 0L) {
+          Log.e(TAG, "Engine closing or not initialized — cannot generate")
+          close()
+          return@withPermit
+        }
+        try {
+          LlamaNative.completionWithImage(
+            ctx = ctxSnapshot,
+            mctx = mctxSnapshot,
+            prompt = fullPrompt,
+            imagePaths = imagePaths.toTypedArray(),
+            maxTokens = 512,
+            temperature = 0.7f,
+            topP = 0.8f,
+            topK = 20,
+            callback = object : LlamaNative.TokenCallback {
+              override fun onToken(piece: String, isEos: Boolean) {
+                if (piece.isNotEmpty()) trySend(piece)
+                if (isEos) close()
+              }
+            },
+          )
+          if (!isClosedForSend) close()
+        } catch (e: Exception) {
+          Log.e(TAG, "Generate with images error: ${e.message}", e)
+          close(e)
+        } finally {
+          activeInferences.decrementAndGet()
+        }
       }
       awaitClose {}
     }
@@ -238,42 +282,85 @@ class LlamaEngine(private val context: Context) {
    * @return 流式 JSON 字符串片段
    */
   fun generateScene(systemPrompt: String, userPrompt: String, grammar: String): Flow<String> {
-    val ctxSnapshot = synchronized(this) { ctx }
-    if (ctxSnapshot == 0L) {
-      Log.e(TAG, "Context not initialized — cannot generate scene")
-      return callbackFlow { close() }
-    }
     val fullPrompt = buildQwenChatPrompt(systemPrompt, userPrompt, imageCount = 0)
     return callbackFlow {
-      try {
-        LlamaNative.completionWithGrammar(
-          ctx = ctxSnapshot,
-          prompt = fullPrompt,
-          grammarStr = grammar,
-          maxTokens = 768,  // 结构化 JSON 需要更多 token
-          temperature = 0.4f,  // 结构化输出降温度，更稳定
-          topP = 0.9f,
-          topK = 40,
-          callback = object : LlamaNative.TokenCallback {
-            override fun onToken(piece: String, isEos: Boolean) {
-              if (piece.isNotEmpty()) trySend(piece)
-              if (isEos) close()
-            }
-          },
-        )
-        if (!isClosedForSend) close()
-      } catch (e: Exception) {
-        Log.e(TAG, "Generate scene error: ${e.message}", e)
-        close(e)
+      inferenceSemaphore.withPermit {
+        val ctxSnapshot = synchronized(this@LlamaEngine) {
+          if (closing || ctx == 0L) 0L
+          else { activeInferences.incrementAndGet(); ctx }
+        }
+        if (ctxSnapshot == 0L) {
+          Log.e(TAG, "Engine closing or not initialized — cannot generate scene")
+          close()
+          return@withPermit
+        }
+        try {
+          LlamaNative.completionWithGrammar(
+            ctx = ctxSnapshot,
+            prompt = fullPrompt,
+            grammarStr = grammar,
+            maxTokens = 768,  // 结构化 JSON 需要更多 token
+            temperature = 0.4f,  // 结构化输出降温度，更稳定
+            topP = 0.9f,
+            topK = 40,
+            callback = object : LlamaNative.TokenCallback {
+              override fun onToken(piece: String, isEos: Boolean) {
+                if (piece.isNotEmpty()) trySend(piece)
+                if (isEos) close()
+              }
+            },
+          )
+          if (!isClosedForSend) close()
+        } catch (e: Exception) {
+          Log.e(TAG, "Generate scene error: ${e.message}", e)
+          close(e)
+        } finally {
+          activeInferences.decrementAndGet()
+        }
       }
       awaitClose {}
     }
   }
 
   /**
-   * 关闭引擎，释放所有资源（synchronized 防止与 generate/init 并发）。
+   * 关闭引擎，安全释放所有资源。
+   *
+   * C-N3/C-N4 修复流程：
+   * 1. 设置 closing=true，阻止新推理启动
+   * 2. 通过 cancelCompletion() 信号中断正在运行的 JNI 推理
+   * 3. 等待 activeInferences 归零（推理在下一个 token 检查处退出）
+   * 4. 在 synchronized 块内 closeInternal() 释放原生资源
+   * 5. 重置 closing=false
+   *
+   * 如果推理在 CLOSE_WAIT_MS 内未退出（极罕见，如单 token decode 卡住），
+   * 记录警告后仍释放——这比无限等待或引擎永久不可用更好。
    */
-  fun close() = synchronized(this) { closeInternal() }
+  fun close() = safeClose()
+
+  private fun safeClose() {
+    synchronized(this) {
+      if (closing) return  // 已经在关闭中，避免重入
+      closing = true
+    }
+
+    // 1. 信号中断正在运行的推理
+    try { LlamaNative.cancelCompletion() } catch (_: Exception) {}
+
+    // 2. 等待推理退出（JNI 在每个 token 迭代检查取消标志）
+    val deadline = System.currentTimeMillis() + CLOSE_WAIT_MS
+    while (activeInferences.get() > 0 && System.currentTimeMillis() < deadline) {
+      Thread.sleep(50)
+    }
+    if (activeInferences.get() > 0) {
+      Log.w(TAG, "safeClose: ${activeInferences.get()} inference(s) still running after ${CLOSE_WAIT_MS}ms, freeing anyway")
+    }
+
+    // 3. 在锁内释放原生资源
+    synchronized(this) {
+      closeInternal()
+      closing = false
+    }
+  }
 
   private fun closeInternal() {
     if (mctx != 0L) {

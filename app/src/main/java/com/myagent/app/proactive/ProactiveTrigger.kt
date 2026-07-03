@@ -16,6 +16,9 @@ import java.util.Calendar
  */
 class ProactiveTrigger {
 
+  // H-M7 修复：记录上次触发时间，用于最小触发间隔去抖
+  @Volatile private var lastTriggerMs = 0L
+
   /**
    * 检查是否应该主动搭话。
    */
@@ -25,15 +28,25 @@ class ProactiveTrigger {
   ): Boolean {
     val now = System.currentTimeMillis()
 
+    // H-M7 修复：最小触发间隔去抖，避免早晚高峰窗口每分钟重复触发导致 spam + 耗电
+    if (lastTriggerMs > 0 && now - lastTriggerMs < MIN_TRIGGER_INTERVAL_MS) {
+      return false
+    }
+
     if (isTimeTrigger()) {
+      lastTriggerMs = now
       return true
     }
 
     if (lastInteractionMs > 0 && (now - lastInteractionMs) > IDLE_THRESHOLD_MS) {
+      lastTriggerMs = now
       return true
     }
 
-    if (isAppLaunch && lastInteractionMs > 0 && Math.random() < 0.3) {
+    // H-M8 修复：原条件 isAppLaunch && lastInteractionMs > 0 在冷启动时（lastInteractionMs==0）恒为 false，分支不可达；
+    // 按文档意图"App 冷启动时 30% 概率"主动搭话，去掉 lastInteractionMs > 0 约束
+    if (isAppLaunch && Math.random() < 0.3) {
+      lastTriggerMs = now
       return true
     }
 
@@ -45,7 +58,7 @@ class ProactiveTrigger {
    */
   fun getProactiveMessage(): String {
     val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-    val messages = if (hour in 6..9) {
+    val messages = if (hour in 6..17) {
       morningMessages
     } else {
       eveningMessages
@@ -56,6 +69,8 @@ class ProactiveTrigger {
   // ── 内部 ──
 
   private val IDLE_THRESHOLD_MS = 10 * 60 * 1000L
+  // H-M7 修复：最小触发间隔 30 分钟，防止频繁触发
+  private val MIN_TRIGGER_INTERVAL_MS = 30 * 60 * 1000L
 
   private fun isTimeTrigger(): Boolean {
     val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)

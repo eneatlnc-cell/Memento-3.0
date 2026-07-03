@@ -67,6 +67,7 @@ fun MementoTheme(
     LocalClawRadii provides ClawRadii(),
     LocalClawTypography provides typography,
     LocalSkinColors provides skinColors,
+    LocalMementoDarkTheme provides isDark,
   ) {
     MaterialTheme(
       colorScheme = clawMaterialColorScheme(clawColors, isDark),

@@ -22,14 +22,22 @@ class MainActivity : ComponentActivity() {
     super.onCreate(savedInstanceState)
     WindowCompat.setDecorFitsSystemWindows(window, false)
 
-    // 触发 runtime 后台初始化，避免启动后长时间空白
-    viewModel.setForeground(true)
-
     setContent {
       val appearanceThemeMode by viewModel.appearanceThemeMode.collectAsState()
       MementoTheme(themeMode = appearanceThemeMode) {
         RootScreen(viewModel = viewModel)
       }
     }
+  }
+
+  override fun onResume() {
+    super.onResume()
+    // 触发 runtime 后台初始化，避免启动后长时间空白
+    viewModel.setForeground(true)
+  }
+
+  override fun onPause() {
+    super.onPause()
+    viewModel.setForeground(false)
   }
 }
