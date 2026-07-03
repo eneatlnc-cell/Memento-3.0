@@ -15,7 +15,6 @@ kotest = "6.1.11"
 ktlint-gradle = "14.2.0"
 kotlin = "2.3.0"
 litertlm = "0.10.2"
-onnxruntime = "1.21.0"
 material = "1.14.0"
 navigation-compose = "2.9.4"
 room = "2.7.1"
@@ -48,7 +47,6 @@ kotlinx-coroutines-guava = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization-json" }
 litertlm-android = { module = "com.google.ai.edge.litertlm:litertlm-android", version.ref = "litertlm" }
-onnxruntime-android = { module = "com.microsoft.onnxruntime:onnxruntime-android", version.ref = "onnxruntime" }
 material = { module = "com.google.android.material:material", version.ref = "material" }
 navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigation-compose" }
 room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }

@@ -24,7 +24,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -53,7 +52,6 @@ import java.io.File
 @Composable
 fun MessageBubble(
   message: ChatMessage,
-  onPlayTts: (String) -> Unit = {},
 ) {
   val isUser = message.role == "user"
   val skinColors = LocalSkinColors.current
@@ -81,7 +79,7 @@ fun MessageBubble(
         .padding(12.dp),
     ) {
       MessageContent(message = message, isUser = isUser)
-      // 操作栏：TTS / 保存到相册
+      // 操作栏：保存到相册
       if (!isUser) {
         Spacer(modifier = Modifier.height(4.dp))
         Row(
@@ -99,20 +97,6 @@ fun MessageBubble(
               Icon(
                 imageVector = Icons.Default.Download,
                 contentDescription = "保存到相册",
-                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
-                modifier = Modifier.size(16.dp),
-              )
-            }
-          }
-          // TTS 播放按钮
-          if (message.content.isNotEmpty()) {
-            IconButton(
-              onClick = { onPlayTts(message.content) },
-              modifier = Modifier.size(28.dp),
-            ) {
-              Icon(
-                imageVector = Icons.Default.VolumeUp,
-                contentDescription = "播放语音",
                 tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
                 modifier = Modifier.size(16.dp),
               )

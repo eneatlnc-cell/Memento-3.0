@@ -260,13 +260,6 @@ class MainViewModel(
 
   // --- 多模态操作 ---
 
-  private val _ttsPlaying = MutableStateFlow(false)
-  val ttsPlaying: StateFlow<Boolean> = _ttsPlaying.asStateFlow()
-
-  suspend fun synthesizeSpeech(text: String): ByteArray {
-    return ensureRuntime().synthesizeSpeech(text)
-  }
-
   suspend fun generateImage(prompt: String): Bitmap {
     return ensureRuntime().generateImage(prompt)
   }

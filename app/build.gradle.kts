@@ -122,9 +122,6 @@ dependencies {
 
   // llama.cpp — 通过 jniLibs 预编译 .so + JNI wrapper（无需 Maven 依赖）
 
-  // ONNX Runtime — 端侧多模态推理（DreamLite + Kokoro-TTS）
-  implementation(libs.onnxruntime.android)
-
   implementation(libs.androidx.security.crypto)
 
   // Markdown rendering

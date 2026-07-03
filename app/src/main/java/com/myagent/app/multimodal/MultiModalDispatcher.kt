@@ -4,18 +4,17 @@ import android.app.Application
 import android.graphics.Bitmap
 import com.myagent.app.multimodal.dreamlite.DreamLiteImageGenerator
 import com.myagent.app.multimodal.hyperframes.HyperFramesRenderer
-import com.myagent.app.multimodal.kokoro.KokoroTtsEngine
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
  * 多模态统一调度器 — 所有端侧能力的唯一入口。
  *
- * 三大多模态模块，零网络请求，纯本地执行：
+ * 当前模块（纯本地执行，零网络请求）：
  * - 图像生成：HTML 渲染（WebView + CSS 图形）
- * - 语音合成：Kokoro-TTS（ONNX Runtime，模型内嵌 APK）
  * - 视频渲染：HyperFrames（WebView + MediaCodec）
+ *
+ * 注：语音合成（Kokoro-TTS）已移除，第一阶段不提供音频支持。
+ * 未来恢复音频能力时，在此处重新接入 TTS 引擎即可。
  *
  * 使用方式：
  * ```kotlin
@@ -25,24 +24,19 @@ import java.io.File
  * // 生成图片
  * val bitmap = MultiModalDispatcher.generateImage("一只戴帽子的猫", "warm")
  *
- * // 合成语音
- * val audio = MultiModalDispatcher.synthesizeSpeech("你好世界", "af_bella")
- *
- * // 渲染视频（可传入 VideoConfig 覆盖默认参数）
+ * // 渲染视频
  * val video = MultiModalDispatcher.renderVideo("生日快乐", config = VideoConfig.LOW)
  * ```
  */
 object MultiModalDispatcher {
 
   private var imageGenerator: DreamLiteImageGenerator? = null
-  private var ttsEngine: KokoroTtsEngine? = null
   private var videoRenderer: HyperFramesRenderer? = null
 
   @Volatile private var initialized = false
 
   /**
-   * 初始化所有多模态引擎。
-   * Kokoro-TTS 模型已内嵌在 APK assets 中，无需额外参数。
+   * 初始化多模态引擎。
    *
    * @param app Application 实例
    */
@@ -52,7 +46,6 @@ object MultiModalDispatcher {
       if (initialized) return
 
       imageGenerator = DreamLiteImageGenerator(app)
-      ttsEngine = KokoroTtsEngine(app)
       videoRenderer = HyperFramesRenderer(app)
 
       initialized = true
@@ -80,47 +73,6 @@ object MultiModalDispatcher {
     val gen = imageGenerator ?: throw IllegalStateException("ImageGenerator not initialized")
     return gen.edit(prompt, sourceImage)
   }
-
-  /**
-   * 合成语音。
-   *
-   * @param text 要合成的文本
-   * @param voice 音色名称（从 getAvailableVoices() 获取）
-   * @param speed 语速，默认 1.0
-   * @return 24kHz 16-bit PCM WAV 字节数组
-   */
-  suspend fun synthesizeSpeech(
-    text: String,
-    voice: String = "af_heart",
-    speed: Float = 1.0f,
-  ): ByteArray {
-    checkInitialized()
-    val tts = ttsEngine ?: throw IllegalStateException("TTS engine not initialized")
-    return withContext(Dispatchers.Default) {
-      tts.synthesize(text, voice, speed)
-    }
-  }
-
-  /**
-   * 流式合成语音。
-   */
-  suspend fun synthesizeSpeechStreaming(
-    text: String,
-    voice: String = "af_heart",
-    speed: Float = 1.0f,
-    onChunk: (ByteArray) -> Unit,
-  ) {
-    checkInitialized()
-    val tts = ttsEngine ?: throw IllegalStateException("TTS engine not initialized")
-    withContext(Dispatchers.Default) {
-      tts.synthesizeStreaming(text, voice, speed, onChunk)
-    }
-  }
-
-  /**
-   * 获取所有可用音色。
-   */
-  fun getAvailableVoices(): List<String> = ttsEngine?.getAvailableVoices() ?: emptyList()
 
   /**
    * 渲染视频（HTML 模板 + Web Animations → MP4）。
@@ -169,10 +121,8 @@ object MultiModalDispatcher {
   fun shutdown() {
     synchronized(this) {
       imageGenerator?.close()
-      ttsEngine?.close()
       videoRenderer?.close()
       imageGenerator = null
-      ttsEngine = null
       videoRenderer = null
       initialized = false
     }

@@ -3,7 +3,6 @@ package com.myagent.app.ui.chat
 import com.myagent.app.BackgroundPattern
 import com.myagent.app.MainViewModel
 import com.myagent.app.ui.LocalSkinColors
-import android.media.MediaPlayer
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -35,24 +34,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.File
-import java.io.FileOutputStream
 
 /**
  * 聊天页面 — 编排层。
@@ -75,11 +65,7 @@ fun ChatScreen(
   val listState = rememberLazyListState()
   val focusManager = LocalFocusManager.current
   val keyboardController = LocalSoftwareKeyboardController.current
-  val context = LocalContext.current
-  val scope = rememberCoroutineScope()
   val skinColors = LocalSkinColors.current
-  // 并发 TTS 播放防护
-  var isPlayingTts by remember { mutableStateOf(false) }
 
   // 自动滚动到最新消息 — 仅当用户在底部附近时自动滚动，避免打断用户回看历史消息
   LaunchedEffect(messages.size, streamingText) {
@@ -136,18 +122,6 @@ fun ChatScreen(
         }
         MessageBubble(
           message = message,
-          onPlayTts = { text ->
-            if (!isPlayingTts) {
-              isPlayingTts = true
-              scope.launch {
-                try {
-                  playTts(viewModel, context, message.id, text)
-                } finally {
-                  isPlayingTts = false
-                }
-              }
-            }
-          },
         )
       }
 
@@ -276,61 +250,5 @@ private fun TypingIndicator() {
           ),
       )
     }
-  }
-}
-
-private suspend fun playTts(
-  viewModel: MainViewModel,
-  context: android.content.Context,
-  messageId: String,
-  text: String,
-) {
-  val tmp = File(context.cacheDir, "tts_${messageId}.wav")
-  var mp: MediaPlayer? = null
-  try {
-    val wav = withContext(Dispatchers.Default) {
-      viewModel.synthesizeSpeech(text)
-    }
-    if (wav.isEmpty()) {
-      android.widget.Toast.makeText(context, "无法播放语音", android.widget.Toast.LENGTH_SHORT).show()
-      return
-    }
-    FileOutputStream(tmp).use { it.write(wav) }
-    // 使用 suspendCancellableCoroutine 确保协程取消时释放 MediaPlayer
-    kotlinx.coroutines.suspendCancellableCoroutine<Unit> { cont ->
-      val player = MediaPlayer().also { mp = it }
-      try {
-        player.setDataSource(tmp.absolutePath)
-        player.setOnPreparedListener { it.start() }
-        player.setOnCompletionListener {
-          it.release()
-          tmp.delete()
-          cont.resume(Unit) {}
-        }
-        player.setOnErrorListener { _, _, _ ->
-          player.release()
-          tmp.delete()
-          android.widget.Toast.makeText(context, "无法播放语音", android.widget.Toast.LENGTH_SHORT).show()
-          cont.resume(Unit) {}
-          true
-        }
-        player.prepareAsync()
-      } catch (e: Exception) {
-        player.release()
-        tmp.delete()
-        android.widget.Toast.makeText(context, "无法播放语音", android.widget.Toast.LENGTH_SHORT).show()
-        cont.resume(Unit) {}
-      }
-      cont.invokeOnCancellation {
-        try { player.release() } catch (_: Exception) {}
-        tmp.delete()
-      }
-    }
-  } catch (e: Exception) {
-    tmp.delete()
-    android.widget.Toast.makeText(context, "无法播放语音", android.widget.Toast.LENGTH_SHORT).show()
-  } finally {
-    // 协程取消时确保 MediaPlayer 被释放
-    try { mp?.release() } catch (_: Exception) {}
   }
 }

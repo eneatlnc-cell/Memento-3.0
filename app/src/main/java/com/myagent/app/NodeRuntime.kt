@@ -172,16 +172,9 @@ class NodeRuntime(
   // --- 多模态调度 ---
 
   /**
-   * 合成语音并返回 WAV 数据
-   */
-  suspend fun synthesizeSpeech(text: String, voice: String = "af_heart"): ByteArray {
-    return MultiModalDispatcher.synthesizeSpeech(text, voice)
-  }
-
-  /**
    * 生成图片
    */
-  suspend fun generateImage(prompt: String, style: String? = null): android.graphics.Bitmap {
+  suspend fun generateImage(prompt: String, style: String? = null): Bitmap {
     return MultiModalDispatcher.generateImage(prompt, style)
   }
 
