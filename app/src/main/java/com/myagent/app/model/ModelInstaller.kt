@@ -11,10 +11,8 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -26,70 +24,82 @@ import java.net.URL
 import java.security.MessageDigest
 
 /**
- * 模型安装器 — 从 TOS 下载 .litertlm 模型到外部存储，支持断点续传和 SHA256 校验。
+ * 模型安装器 — 从 TOS 下载 GGUF 模型到外部存储，支持断点续传和 SHA256 校验。
  *
- * v2.0：端侧推理模型（~3.66 GB），.litertlm 格式，LiteRT-LM 引擎。
+ * v3.1：llama.cpp 替换 LiteRT-LM，双文件结构：
+ * - 主模型：qwen3.5-0.8b-q4_k_m.gguf（~500MB）
+ * - 视觉投影器：mmproj-BF16.gguf（~200MB）
  *
  * 下载策略（两层）：
  * 1. 鉴权下载（正式版）：通过 activationManager 获取 token → AuthApi 换预签名 URL → 私有读
  * 2. 公读下载（测试版）：直接用公读 CDN URL，无需 token
- * 两层自动切换，无需改代码。
  *
  * 策略：
  * - 支持 HTTP Range 断点续传
- * - 下载完成后 SHA256 校验
+ * - 下载完成后 SHA256 校验（可空，未配置则跳过）
  * - 模型文件存储在外部存储（getExternalFilesDir），清除数据/缓存不会删除
- * - 自动从旧内部存储路径迁移已有模型文件
  */
 class ModelInstaller(
   private val context: Context,
   private val activationManager: ActivationManager? = null,
 ) {
   companion object {
-    const val MODEL_FILE_NAME = "mynagent-v1-it.litertlm"
+    /** 主模型文件名（Qwen3.5-0.8B Q4_K_M） */
+    const val MODEL_FILE_NAME = "qwen3.5-0.8b-q4_k_m.gguf"
 
-    /** SHA256 校验值 */
-    private const val EXPECTED_SHA256 =
-      "0B2A8980CE155FD97673D8E820B4D29D9C7D99B8FA6806F425D969B145BD52E0"
+    /** 视觉投影器文件名（mmproj BF16） */
+    const val MMPROJ_FILE_NAME = "mmproj-BF16.gguf"
 
-    /** 公读 CDN 地址（兜底，测试阶段使用） */
-    private const val PUBLIC_DOWNLOAD_URL =
-      "https://memento.tos-cn-beijing.volces.com/memento-E4B-it.litertlm"
+    /** 主模型 SHA256 校验值（待用户提供，null 表示暂不校验） */
+    @Volatile var EXPECTED_MODEL_SHA256: String? = null
+
+    /** mmproj SHA256 校验值（待用户提供，null 表示暂不校验） */
+    @Volatile var EXPECTED_MMPROJ_SHA256: String? = null
+
+    /** 公读 CDN 基地址（模型文件放在桶里，主模型和 mmproj 分别下载） */
+    @Volatile var PUBLIC_CDN_BASE: String = "https://memento.tos-cn-beijing.volces.com/"
+
+    /** 主模型公读 URL（可被覆盖） */
+    @Volatile var MODEL_DOWNLOAD_URL: String = PUBLIC_CDN_BASE + MODEL_FILE_NAME
+
+    /** mmproj 公读 URL（可被覆盖） */
+    @Volatile var MMPROJ_DOWNLOAD_URL: String = PUBLIC_CDN_BASE + MMPROJ_FILE_NAME
 
     private const val BUFFER_SIZE = 8192
     private const val CONNECT_TIMEOUT_MS = 15_000
-    private const val READ_TIMEOUT_MS = 120_000 // 3.66GB 大文件下载，需要更长的读取超时
-    const val MAX_RETRIES = 3 // 最大重试次数
-    private const val RETRY_DELAY_MS = 2000L // 重试前等待
+    private const val READ_TIMEOUT_MS = 120_000
+    const val MAX_RETRIES = 3
+    private const val RETRY_DELAY_MS = 2000L
   }
 
   /**
-   * 获取模型文件的存储路径（外部存储，清除数据后不会删除）。
-   *
-   * 优先使用 getExternalFilesDir（Android 4.4+ 无需权限，清除数据不会删除），
-   * 若外部存储不可用则回退到内部 filesDir。
-   *
-   * 首次调用时自动从旧内部存储路径迁移已有模型文件。
+   * 获取主模型文件的存储路径（外部存储，清除数据后不会删除）。
    */
-  fun getModelPath(): File {
+  fun getModelPath(): File = getModelFile(MODEL_FILE_NAME)
+
+  /**
+   * 获取 mmproj 文件的存储路径。
+   */
+  fun getMmprojPath(): File = getModelFile(MMPROJ_FILE_NAME)
+
+  private fun getModelFile(fileName: String): File {
     val appContext = context.applicationContext
     val externalDir = appContext.getExternalFilesDir(null)
     val targetFile = if (externalDir != null) {
-      File(externalDir, "models/$MODEL_FILE_NAME")
+      File(externalDir, "models/$fileName")
     } else {
-      File(appContext.filesDir, "models/$MODEL_FILE_NAME")
+      File(appContext.filesDir, "models/$fileName")
     }
 
     // 自动迁移：如果内部存储有旧模型文件，移动到外部存储
     if (externalDir != null) {
-      val legacyFile = File(appContext.filesDir, "models/$MODEL_FILE_NAME")
+      val legacyFile = File(appContext.filesDir, "models/$fileName")
       if (legacyFile.exists() && legacyFile.length() > 0 && !targetFile.exists()) {
         targetFile.parentFile?.mkdirs()
         try {
           legacyFile.copyTo(targetFile)
           legacyFile.delete()
         } catch (_: Exception) {
-          // 迁移失败则继续使用旧路径
           return legacyFile
         }
       }
@@ -100,11 +110,8 @@ class ModelInstaller(
 
   /**
    * 解析下载 URL。鉴权优先，公读兜底。
-   *
-   * 1. 有 activationManager + token → 调用 AuthApi.getDownloadUrl(token) 换预签名 URL
-   * 2. 否则 → 直接用公读 CDN URL
    */
-  private fun resolveDownloadUrl(): String {
+  private fun resolveDownloadUrl(defaultUrl: String): String {
     val token = activationManager?.getToken()
     if (token != null && AuthApi.isOnline) {
       val signedUrl = AuthApi.getDownloadUrl(token)
@@ -112,81 +119,82 @@ class ModelInstaller(
         Log.i("ModelInstaller", "Using authenticated download URL")
         return signedUrl
       }
-      Log.w("ModelInstaller", "AuthApi returned null URL, falling back to public CDN")
     }
-    Log.i("ModelInstaller", "Using public CDN download URL")
-    return PUBLIC_DOWNLOAD_URL
+    return defaultUrl
   }
 
   /**
-   * 检查模型是否已安装且 SHA256 校验通过。
-   * 注意：这是重量级操作（全量 SHA256），不要在主线程调用。
+   * 检查主模型 + mmproj 是否都已安装且校验通过。
    */
   fun isModelReady(): Boolean {
-    val file = getModelPath()
-    return file.exists() && file.length() > 0 && verifyChecksum(file)
+    return isFileReady(getModelPath(), EXPECTED_MODEL_SHA256) &&
+      isFileReady(getMmprojPath(), EXPECTED_MMPROJ_SHA256)
   }
 
   /**
-   * 轻量级检查：仅判断文件是否存在且大小 > 0，不做 SHA256。
-   * 可在主线程调用，用于 UI 路由判断。
+   * 轻量级检查：仅判断两个文件是否存在且大小 > 0。
    */
   fun isModelFileExists(): Boolean {
-    val file = getModelPath()
-    return file.exists() && file.length() > 0
+    val model = getModelPath()
+    val mmproj = getMmprojPath()
+    return model.exists() && model.length() > 0 &&
+      mmproj.exists() && mmproj.length() > 0
+  }
+
+  private fun isFileReady(file: File, expectedSha256: String?): Boolean {
+    if (!file.exists() || file.length() == 0L) return false
+    if (expectedSha256 == null) return true  // 未配置校验值则跳过
+    return verifyChecksum(file, expectedSha256)
   }
 
   /**
-   * 下载模型文件，返回进度 Flow。
-   *
-   * 流程：
-   * 1. 已存在 + 校验通过 → 直接 Completed
-   * 2. 发起 HTTP 下载（Range 续传）
-   * 3. SHA256 校验（如果已配置）
-   * 4. 失败则清理并返回 Failed
+   * 下载主模型 + mmproj，返回进度 Flow。
+   * 进度百分比基于两个文件总大小合并计算。
    */
   fun downloadModel(): Flow<ModelDownloadState> = flow {
     val modelFile = getModelPath()
-
-    // 确保目录存在
+    val mmprojFile = getMmprojPath()
     modelFile.parentFile?.mkdirs()
 
     // 已存在且校验通过
-    if (modelFile.exists() && modelFile.length() > 0 && isModelReady()) {
+    if (isModelReady()) {
       emit(ModelDownloadState.Completed)
       return@flow
     }
 
-    // 保留已下载的部分文件用于断点续传
-    // 仅在文件为空（0 字节）时删除，避免丢失已下载的进度
-    if (modelFile.exists() && modelFile.length() == 0L) {
-      modelFile.delete()
-    }
+    if (modelFile.exists() && modelFile.length() == 0L) modelFile.delete()
+    if (mmprojFile.exists() && mmprojFile.length() == 0L) mmprojFile.delete()
 
     emit(ModelDownloadState.Downloading(0, 0, 0, 0))
 
     try {
-      // —— 第 1 步：获取文件大小 ——
-      val downloadUrl = resolveDownloadUrl()
-      val totalSize = fetchContentLength(downloadUrl)
-      if (totalSize <= 0) {
+      // 获取两个文件的总大小
+      val modelUrl = resolveDownloadUrl(MODEL_DOWNLOAD_URL)
+      val mmprojUrl = resolveDownloadUrl(MMPROJ_DOWNLOAD_URL)
+      val modelSize = fetchContentLength(modelUrl)
+      val mmprojSize = fetchContentLength(mmprojUrl)
+      if (modelSize <= 0 || mmprojSize <= 0) {
         emit(ModelDownloadState.Failed("无法获取模型文件信息，请检查网络连接"))
         return@flow
       }
+      val totalSize = modelSize + mmprojSize
 
-      // —— 第 2 步：下载 ——
-      val existingBytes = modelFile.length()
-
-      // Channel 桥接：downloadFile 的回调是普通 lambda，无法直接调用 suspend 的 emit。
-      // 通过 channel 把回调数据 push 到协程侧，再由协程 collect 后 emit 到 Flow。
       coroutineScope {
         val progressChannel = Channel<Pair<Long, Long>>(Channel.CONFLATED)
 
         val downloadJob = launch(Dispatchers.IO) {
           withContext(NonCancellable) {
             try {
-              downloadFile(downloadUrl, modelFile, existingBytes, totalSize) { downloaded, speed ->
-                progressChannel.trySend(downloaded to speed)
+              // 下载主模型
+              var totalDownloaded = 0L
+              downloadFile(modelUrl, modelFile, modelFile.length(), modelSize) { downloaded, speed ->
+                progressChannel.trySend((totalDownloaded + downloaded) to speed)
+              }
+              totalDownloaded = modelSize
+
+              // 下载 mmproj
+              downloadFile(mmprojUrl, mmprojFile, mmprojFile.length(), mmprojSize) { downloaded, speed ->
+                progressChannel.trySend((totalDownloaded + downloaded) to speed)
               }
             } finally {
               progressChannel.close()
@@ -200,10 +208,9 @@ class ModelInstaller(
         }
       }
 
-      // —— 第 3 步：校验 ——
+      // 校验
       emit(ModelDownloadState.Verifying)
       if (!isModelReady()) {
-        modelFile.delete()
         emit(ModelDownloadState.Failed("模型文件校验失败，请重试"))
         return@flow
       }
@@ -212,7 +219,6 @@ class ModelInstaller(
     } catch (e: CancellationException) {
       throw e
     } catch (e: IOException) {
-      // 网络错误，保留已下载部分供下次续传
       emit(ModelDownloadState.Failed("下载中断：${e.message ?: "网络错误"}，已下载部分已保留"))
     } catch (e: Exception) {
       emit(ModelDownloadState.Failed("下载失败：${e.message ?: "未知错误"}"))
@@ -220,74 +226,12 @@ class ModelInstaller(
   }.flowOn(Dispatchers.IO)
 
   /**
-   * 内部下载方法（不含 flowOn），供 ForegroundService 直接调用。
-   * 调用方需自行管理协程上下文。
+   * 内部下载方法（供 ForegroundService 直接调用，与 downloadModel 等价）。
    */
-  internal fun downloadModelInternal(): Flow<ModelDownloadState> = flow {
-    val modelFile = getModelPath()
-    modelFile.parentFile?.mkdirs()
-
-    // 已存在且校验通过
-    if (modelFile.exists() && modelFile.length() > 0 && isModelReady()) {
-      emit(ModelDownloadState.Completed)
-      return@flow
-    }
-
-    if (modelFile.exists() && modelFile.length() == 0L) {
-      modelFile.delete()
-    }
-
-    emit(ModelDownloadState.Downloading(0, 0, 0, 0))
-
-    try {
-      val downloadUrl = resolveDownloadUrl()
-      val totalSize = fetchContentLength(downloadUrl)
-      if (totalSize <= 0) {
-        emit(ModelDownloadState.Failed("无法获取模型文件信息，请检查网络连接"))
-        return@flow
-      }
-
-      val existingBytes = modelFile.length()
-
-      coroutineScope {
-        val progressChannel = Channel<Pair<Long, Long>>(Channel.CONFLATED)
-        val downloadJob = launch(Dispatchers.IO) {
-          withContext(NonCancellable) {
-            try {
-              downloadFile(downloadUrl, modelFile, existingBytes, totalSize) { downloaded, speed ->
-                progressChannel.trySend(downloaded to speed)
-              }
-            } finally {
-              progressChannel.close()
-            }
-          }
-        }
-        for ((downloaded, speed) in progressChannel) {
-          val pct = if (totalSize > 0) (downloaded * 100 / totalSize).toInt().coerceIn(0, 100) else 0
-          emit(ModelDownloadState.Downloading(pct, downloaded, totalSize, speed))
-        }
-      }
-
-      emit(ModelDownloadState.Verifying)
-      if (!isModelReady()) {
-        modelFile.delete()
-        emit(ModelDownloadState.Failed("模型文件校验失败，请重试"))
-        return@flow
-      }
-
-      emit(ModelDownloadState.Completed)
-    } catch (e: CancellationException) {
-      throw e
-    } catch (e: IOException) {
-      emit(ModelDownloadState.Failed("下载中断：${e.message ?: "网络错误"}，已下载部分已保留"))
-    } catch (e: Exception) {
-      emit(ModelDownloadState.Failed("下载失败：${e.message ?: "未知错误"}"))
-    }
-  }
+  internal fun downloadModelInternal(): Flow<ModelDownloadState> = downloadModel()
 
   /**
    * 带自动重试的下载方法。
-   * 最多重试 MAX_RETRIES 次，失败后需要手动重试。
    */
   fun downloadModelWithRetry(retryCount: Int = 0): Flow<ModelDownloadState> = flow {
     var currentRetry = retryCount
@@ -296,7 +240,7 @@ class ModelInstaller(
     while (currentRetry <= MAX_RETRIES) {
       var downloadSucceeded = false
 
-      downloadModelInternal().collect { state ->
+      downloadModel().collect { state ->
         lastState = state
         when (state) {
           is ModelDownloadState.Completed -> {
@@ -304,7 +248,6 @@ class ModelInstaller(
             emit(state)
           }
           is ModelDownloadState.Failed -> {
-            // 暂不 emit，等待重试
             lastState = state
           }
           else -> emit(state)
@@ -315,7 +258,6 @@ class ModelInstaller(
 
       currentRetry++
       if (currentRetry > MAX_RETRIES) {
-        // 重试耗尽，emit 最终失败状态
         val errorMsg = (lastState as? ModelDownloadState.Failed)?.error ?: "下载失败"
         emit(ModelDownloadState.Failed("$errorMsg（已重试 $MAX_RETRIES 次）"))
         return@flow
@@ -326,7 +268,6 @@ class ModelInstaller(
     }
   }.flowOn(Dispatchers.IO)
 
-  // ── HEAD 请求获取 Content-Length ──
   private fun fetchContentLength(urlStr: String): Long {
     var connection: HttpURLConnection? = null
     try {
@@ -334,7 +275,7 @@ class ModelInstaller(
         requestMethod = "HEAD"
         connectTimeout = CONNECT_TIMEOUT_MS
         readTimeout = READ_TIMEOUT_MS
-        setRequestProperty("User-Agent", "Memento/2.0")
+        setRequestProperty("User-Agent", "Memento/3.1")
       }
       val length = connection.contentLengthLong
       Log.i("ModelInstaller", "HEAD $urlStr → Content-Length: $length, response: ${connection.responseCode}")
@@ -347,7 +288,6 @@ class ModelInstaller(
     }
   }
 
-  // ── 流式下载，支持 Range 断点续传 ──
   private fun downloadFile(
     urlStr: String,
     target: File,
@@ -364,8 +304,7 @@ class ModelInstaller(
         requestMethod = "GET"
         connectTimeout = CONNECT_TIMEOUT_MS
         readTimeout = READ_TIMEOUT_MS
-        setRequestProperty("User-Agent", "Memento/2.0")
-        // 断点续传：如果已有部分数据，从断点处继续
+        setRequestProperty("User-Agent", "Memento/3.1")
         if (existingBytes > 0) {
           setRequestProperty("Range", "bytes=$existingBytes-")
         }
@@ -379,7 +318,7 @@ class ModelInstaller(
       }
 
       input = connection.inputStream
-      output = FileOutputStream(target, existingBytes > 0) // append 模式
+      output = FileOutputStream(target, existingBytes > 0)
 
       val buffer = ByteArray(BUFFER_SIZE)
       var bytesRead: Int
@@ -391,7 +330,6 @@ class ModelInstaller(
         output.write(buffer, 0, bytesRead)
         downloaded += bytesRead
 
-        // 每 200ms 报告一次进度
         val now = System.currentTimeMillis()
         if (now - lastReportTime >= 200) {
           val elapsed = (now - lastReportTime).coerceAtLeast(1)
@@ -402,16 +340,12 @@ class ModelInstaller(
         }
       }
 
-      // 强制刷盘：确保 3.66GB 文件完全写入物理磁盘再校验
       output.fd.sync()
-
-      // 最终报告
       onProgress(downloaded, 0)
 
-      // 下载量校验：CDN 可能提前断流导致文件不完整
       if (downloaded != totalSize) {
         throw IOException(
-          "下载不完整: 期望 ${totalSize} 字节, 实际仅收到 ${downloaded} 字节 " +
+          "下载不完整: 期望 $totalSize 字节, 实际仅收到 $downloaded 字节 " +
           "(${"%.1f".format(downloaded * 100.0 / totalSize.coerceAtLeast(1))}%)"
         )
       }
@@ -422,8 +356,7 @@ class ModelInstaller(
     }
   }
 
-  // ── SHA256 校验 ──
-  private fun verifyChecksum(file: File): Boolean {
+  private fun verifyChecksum(file: File, expectedSha256: String): Boolean {
     if (!file.exists()) return false
     return try {
       val digest = MessageDigest.getInstance("SHA-256")
@@ -435,7 +368,7 @@ class ModelInstaller(
         }
       }
       val hash = digest.digest().joinToString("") { "%02X".format(it) }
-      hash == EXPECTED_SHA256
+      hash == expectedSha256.uppercase()
     } catch (_: Exception) {
       false
     }

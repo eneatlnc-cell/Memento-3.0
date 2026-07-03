@@ -15,9 +15,23 @@ android {
     applicationId = "com.myagent.app"
     minSdk = 31
     targetSdk = 36
-    versionCode = 15
-    versionName = "3.0.1"
+    versionCode = 16
+    versionName = "3.1.0"
+
+    ndk {
+      abiFilters += "arm64-v8a"  // llama.cpp 骁龙优化只支持 arm64-v8a
+    }
   }
+
+  // 只编译我们自己的 JNI wrapper（libllama_jni.so），
+  // llama.cpp/ggml/mtmd 的 .so 由 Snapdragon toolchain 预编译后放 jniLibs
+  // 注意：放好 .so 和头文件后取消下方注释启用 native 构建
+  // externalNativeBuild {
+  //   cmake {
+  //     path = file("src/main/cpp/CMakeLists.txt")
+  //     version = "3.22.1"
+  //   }
+  // }
 
   buildTypes {
     release {
@@ -50,6 +64,10 @@ android {
           "DebugProbesKt.bin",
           "kotlin-tooling-metadata.json",
         )
+    }
+    jniLibs {
+      // HTP skel 库依赖动态符号，不能被 strip
+      doNotStrip += listOf("**/libggml-htp-*.so", "**/libggml-hexagon.so")
     }
   }
 
@@ -102,8 +120,7 @@ dependencies {
   implementation(libs.kotlinx.coroutines.guava)
   implementation(libs.kotlinx.serialization.json)
 
-  // LiteRT-LM — on-device LLM inference
-  implementation(libs.litertlm.android)
+  // llama.cpp — 通过 jniLibs 预编译 .so + JNI wrapper（无需 Maven 依赖）
 
   // ONNX Runtime — 端侧多模态推理（DreamLite + Kokoro-TTS）
   implementation(libs.onnxruntime.android)

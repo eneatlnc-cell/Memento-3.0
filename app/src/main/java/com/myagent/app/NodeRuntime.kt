@@ -41,8 +41,10 @@ class NodeRuntime(
   // 本地模型加载器 — lazy 初始化，避免构造时阻塞调用线程
   val modelLoader: LocalModelLoader by lazy {
     val modelFile = modelInstaller.getModelPath()
+    val mmprojFile = modelInstaller.getMmprojPath()
     val path = if (modelInstaller.isModelFileExists()) modelFile.absolutePath else null
-    LocalModelLoader(app, path).also {
+    val mmproj = if (modelInstaller.isModelFileExists()) mmprojFile.absolutePath else null
+    LocalModelLoader(app, path, mmproj).also {
       if (path != null) {
         it.init()
       }
@@ -80,7 +82,8 @@ class NodeRuntime(
         _downloadState.value = state
         if (state is ModelDownloadState.Completed && modelInstaller.isModelReady()) {
           val modelPath = modelInstaller.getModelPath().absolutePath
-          modelLoader.reload(modelPath)
+          val mmprojPath = modelInstaller.getMmprojPath().absolutePath
+          modelLoader.reload(modelPath, mmprojPath)
         }
       }
     }

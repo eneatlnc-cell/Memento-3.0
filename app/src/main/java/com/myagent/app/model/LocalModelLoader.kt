@@ -13,21 +13,26 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * 本地模型加载器 — 使用 LiteRT-LM 真实推理，模型必须下载完成后才能使用。
+ * 本地模型加载器 — 使用 llama.cpp 真实推理，模型必须下载完成后才能使用。
  *
- * v2.0：LiteRT-LM 替代 llama.cpp，纯 Kotlin 实现，无需 JNI/NDK。
- * v2.1：移除 Mock 降级，模型未就绪时拒绝推理。
+ * v3.1：llama.cpp 替换 LiteRT-LM，双文件结构（主模型 + mmproj）。
+ * - 主模型：qwen3.5-0.8b-q4_k_m.gguf
+ * - 视觉投影器：mmproj-BF16.gguf（多模态必需）
+ *
+ * 业务层接口保持不变（generate / generateWithImages / unload），
+ * 引擎切换对 ChatController 等上层透明。
  */
 class LocalModelLoader(
   private val context: Context,
   private var modelPath: String?,
+  private var mmprojPath: String? = null,
 ) {
   companion object {
     private const val TAG = "LocalModelLoader"
     private const val INFERENCE_TIMEOUT_MS = 120_000L
   }
 
-  private val engine = LiteRtEngine(context)
+  private val engine = LlamaEngine(context)
   @Volatile private var initialized = false
 
   /**
@@ -38,25 +43,29 @@ class LocalModelLoader(
       Log.i(TAG, "Model not yet downloaded, waiting for download")
       return
     }
-    doInitialize(modelPath!!)
+    doInitialize(modelPath!!, mmprojPath)
   }
 
   /**
    * 下载完成后重新加载模型。
+   *
+   * @param newModelPath  主模型 GGUF 路径
+   * @param newMmprojPath mmproj GGUF 路径（null 则纯文本模式）
    */
-  fun reload(newModelPath: String) {
+  fun reload(newModelPath: String, newMmprojPath: String? = null) {
     modelPath = newModelPath
-    doInitialize(newModelPath)
+    mmprojPath = newMmprojPath
+    doInitialize(newModelPath, newMmprojPath)
   }
 
-  private fun doInitialize(path: String) {
+  private fun doInitialize(path: String, mmproj: String?) {
     try {
-      if (!engine.init(path)) {
+      if (!engine.init(path, mmproj)) {
         Log.e(TAG, "Engine init failed")
         return
       }
       initialized = true
-      Log.i(TAG, "LiteRT-LM engine ready: $path")
+      Log.i(TAG, "LlamaEngine ready: $path, mmproj=${mmproj ?: "null"}")
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
@@ -71,8 +80,8 @@ class LocalModelLoader(
   private fun tryAutoRecover(): Boolean {
     if (initialized) return true
     if (modelPath == null) return false
-    Log.i(TAG, "Auto-recovering: re-initializing engine from $modelPath")
-    doInitialize(modelPath!!)
+    Log.i(TAG, "Auto-recovering: re-initializing engine from $modelPath, mmproj=${mmprojPath ?: "null"}")
+    doInitialize(modelPath!!, mmprojPath)
     return initialized
   }
 
@@ -124,7 +133,7 @@ class LocalModelLoader(
 
   /**
    * 多模态流式生成（文本 + 图片）。
-   * 图片路径传给 LiteRT-LM Conversation，Gemma 4 原生视觉编码器解析。
+   * 图片路径传给 llama.cpp mtmd，Qwen3.5 视觉编码器解析。
    */
   fun generateWithImages(prompt: String, imagePaths: List<String>): Flow<String> {
     if (!tryAutoRecover()) {
