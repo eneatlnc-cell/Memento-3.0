@@ -68,6 +68,8 @@ class MainViewModel(
     viewModelScope.launch(Dispatchers.Default) {
       try {
         ensureRuntime()
+        // 在 Default 线程触发 JNI 模型加载，避免主线程 ANR
+        runtimeRef.value?.ensureModelLoaded()
       } catch (e: Exception) {
         Log.e("MainViewModel", "Runtime startup failed", e)
       }
@@ -252,7 +254,18 @@ class MainViewModel(
 
   /** 插入系统消息（主动搭话用） */
   fun insertSystemMessage(text: String) {
-    ensureRuntime().insertSystemMessage(text)
+    // 不强制 ensureRuntime()：若 runtime 未就绪，在主线程同步触发 NodeRuntime 构造
+    // 会连带触发 modelLoader lazy 初始化（JNI 模型加载，数秒），阻塞主线程导致 ANR/崩溃。
+    // runtime 已就绪时直接执行；未就绪时排队，由 ensureRuntime() 完成后补执行。
+    val runtime = runtimeRef.value
+    if (runtime != null) {
+      runtime.insertSystemMessage(text)
+    } else {
+      synchronized(pendingActions) {
+        pendingActions.add { runtimeRef.value?.insertSystemMessage(text) }
+      }
+      queueRuntimeStartup()
+    }
   }
 
   // --- 数据管理 ---

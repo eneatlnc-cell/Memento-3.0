@@ -1,6 +1,7 @@
 package com.myagent.app
 
 import android.graphics.Bitmap
+import android.util.Log
 import com.myagent.app.chat.ChatController
 import com.myagent.app.chat.ChatMessage
 import com.myagent.app.chat.OutgoingAttachment
@@ -38,18 +39,19 @@ class NodeRuntime(
   // 模型安装器 — 共享 NodeApp 单例，确保全 App 一致
   val modelInstaller = app.modelInstaller
 
-  // 本地模型加载器 — lazy 初始化，避免构造时阻塞调用线程
+  // 本地模型加载器 — lazy 初始化。
+  // 注意：lazy 块只创建对象，不调 init()（JNI 模型加载耗时数秒）。
+  // init() 由 ensureModelLoaded() 在后台线程显式触发，避免主线程抢跑导致 ANR/崩溃。
   val modelLoader: LocalModelLoader by lazy {
     val modelFile = modelInstaller.getModelPath()
     val mmprojFile = modelInstaller.getMmprojPath()
     val path = if (modelInstaller.isModelFileExists()) modelFile.absolutePath else null
     val mmproj = if (modelInstaller.isModelFileExists()) mmprojFile.absolutePath else null
-    LocalModelLoader(app, path, mmproj).also {
-      if (path != null) {
-        it.init()
-      }
-    }
+    LocalModelLoader(app, path, mmproj)
   }
+
+  // 标记是否已对 modelLoader 执行过 init/reload，避免重复加载
+  @Volatile private var modelLoaderInitialized = false
 
   // 聊天控制器
   val chatController = ChatController(scope, modelLoader, memoryManager, app.cacheDir, app.contentResolver, app)
@@ -84,6 +86,7 @@ class NodeRuntime(
           val modelPath = modelInstaller.getModelPath().absolutePath
           val mmprojPath = modelInstaller.getMmprojPath().absolutePath
           modelLoader.reload(modelPath, mmprojPath)
+          modelLoaderInitialized = true
         }
       }
     }
@@ -102,6 +105,25 @@ class NodeRuntime(
    */
   fun unloadModel() {
     modelLoader.unload()
+    modelLoaderInitialized = false
+  }
+
+  /**
+   * 在后台线程触发模型加载（JNI init）。
+   * 若模型已加载或路径为空则跳过；加载失败由 doInitialize 内部 catch 记录。
+   * 必须在非主线程调用（JNI 模型加载耗时数秒）。
+   */
+  fun ensureModelLoaded() {
+    if (modelLoaderInitialized) return
+    val path = modelInstaller.getModelPath().absolutePath.takeIf { modelInstaller.isModelFileExists() }
+    if (path == null) {
+      Log.i("NodeRuntime", "Model not downloaded yet, skip init")
+      return
+    }
+    val mmproj = modelInstaller.getMmprojPath().absolutePath
+    Log.i("NodeRuntime", "Background model init: $path")
+    modelLoader.reload(path, mmproj)
+    modelLoaderInitialized = true
   }
 
   val isModelReady: Boolean
