@@ -12,15 +12,20 @@
             <certificates src="system" />
         </trust-anchors>
     </domain-config>
-    <!-- Allow cleartext for local development (emulator → localhost), debug builds only -->
+    <!--
+      localhost / 10.0.2.2 cleartext：仅模拟器本地开发用。
+      release 包不会访问这些地址，规则存在亦无害；放在 domain-config 而非
+      debug-overrides，因为 <debug-overrides> 规范只接受 <trust-anchors>。
+    -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.2.2</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+    <!-- Debug 构建额外信任 user 证书（用于抓包调试） -->
     <debug-overrides>
         <trust-anchors>
             <certificates src="system" />
             <certificates src="user" />
         </trust-anchors>
-        <domain-config cleartextTrafficPermitted="true">
-            <domain includeSubdomains="false">10.0.2.2</domain>
-            <domain includeSubdomains="false">localhost</domain>
-        </domain-config>
     </debug-overrides>
 </network-security-config>
