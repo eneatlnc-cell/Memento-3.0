@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<style>
+  /* ============ 全屏画布 ============ */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  #stage {
+    position: relative;
+    width: 100vw; height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ============ 角色 ============ */
+  .character {
+    position: absolute;
+    /* transform 由 JS 根据 ComicScene.transform 设置 */
+    transition: transform 0.4s ease-out;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .character img {
+    max-width: 100%; max-height: 100%;
+    object-fit: contain;
+    filter: drop-shadow(0 4px 8px rgba(0,0,0,0.15));
+  }
+  /* 表情切换动画（由 beats 触发 .expr-xxx class） */
+  .character.bounce { animation: bounce 0.3s ease-out; }
+  .character.shake { animation: shake 0.4s ease-in-out; }
+  @keyframes bounce {
+    0%, 100% { transform: var(--base-transform) scale(1); }
+    50%      { transform: var(--base-transform) scale(1.1); }
+  }
+  @keyframes shake {
+    0%, 100% { transform: var(--base-transform) translateX(0); }
+    25%      { transform: var(--base-transform) translateX(-8px); }
+    75%      { transform: var(--base-transform) translateX(8px); }
+  }
+
+  /* ============ 对话气泡 ============ */
+  #dialogue {
+    position: absolute;
+    left: 50%; bottom: 8%;
+    transform: translateX(-50%);
+    max-width: 80%;
+    padding: 16px 24px;
+    background: #fff;
+    border-radius: 20px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    font-size: 18px;
+    line-height: 1.5;
+    color: #222;
+    opacity: 0;
+    visibility: hidden;
+    z-index: 10;
+  }
+  #dialogue .speaker {
+    font-weight: 600;
+    color: #4a90d9;
+    margin-bottom: 4px;
+    font-size: 14px;
+  }
+  /* 气泡动画 */
+  #dialogue.anim-pop       { animation: popIn 0.3s ease-out forwards; }
+  #dialogue.anim-fade      { animation: fadeIn 0.4s ease-out forwards; }
+  #dialogue.anim-slide     { animation: slideUp 0.4s ease-out forwards; }
+  #dialogue.anim-typewriter { opacity: 1; visibility: visible; }
+  @keyframes popIn {
+    0%   { opacity: 0; transform: translateX(-50%) scale(0.7); }
+    70%  { opacity: 1; transform: translateX(-50%) scale(1.05); }
+    100% { opacity: 1; transform: translateX(-50%) scale(1); visibility: visible; }
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; } to { opacity: 1; visibility: visible; }
+  }
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateX(-50%) translateY(20px); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); visibility: visible; }
+  }
+
+  /* ============ 场景切换闪白 ============ */
+  #flash {
+    position: absolute; inset: 0;
+    background: #fff;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 100;
+  }
+  #flash.fire { animation: flash 0.4s ease-out; }
+  @keyframes flash {
+    0% { opacity: 0; } 50% { opacity: 0.8; } 100% { opacity: 0; }
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="flash"></div>
+  <!-- 角色节点由 JS 动态插入 -->
+  <div id="dialogue">
+    <div class="speaker"></div>
+    <div class="text"></div>
+  </div>
+</div>
+
+<script>
+// ============ 由 SceneRenderer 注入的场景数据 ============
+// window.__SCENE__ = { layout, characters, beats, dialogue };
+// window.__ASSET_PATHS__ = { "user_media_0": "file:///...", ... };
+// window.__RENDER_DONE__ = callback name to signal completion (录制用)
+
+(function() {
+  const SCENE = window.__SCENE__;
+  const ASSETS = window.__ASSET_PATHS__ || {};
+  const stage = document.getElementById('stage');
+  const dialogueEl = document.getElementById('dialogue');
+  const flashEl = document.getElementById('flash');
+
+  if (!SCENE) { console.error('No scene data'); return; }
+
+  // ---- 1. 渲染角色 ----
+  const charEls = {};
+  SCENE.characters.forEach(function(c) {
+    const el = document.createElement('div');
+    el.className = 'character';
+    el.id = c.id;
+    // transform: x/y 是 0-1 的相对坐标，scale/rotation 是绝对值
+    const tx = (c.transform.x || 0.5) * 100;
+    const ty = (c.transform.y || 0.5) * 100;
+    const scale = c.transform.scale || 1;
+    const rot = c.transform.rotation || 0;
+    const baseTransform = 'translate(-50%, -50%) rotate(' + rot + 'deg) scale(' + scale + ')';
+    el.style.left = tx + '%';
+    el.style.top = ty + '%';
+    el.style.setProperty('--base-transform', baseTransform);
+    el.style.transform = baseTransform;
+    el.style.width = '40%';
+    el.style.height = '50%';
+
+    if (c.assetRef && ASSETS[c.assetRef]) {
+      const img = document.createElement('img');
+      img.src = ASSETS[c.assetRef];
+      img.alt = c.name;
+      el.appendChild(img);
+    } else {
+      // 无素材时显示角色名占位
+      const placeholder = document.createElement('div');
+      placeholder.textContent = c.name;
+      placeholder.style.cssText = 'font-size:24px;color:#666;padding:20px;background:rgba(255,255,255,0.7);border-radius:12px;';
+      el.appendChild(placeholder);
+    }
+    stage.appendChild(el);
+    charEls[c.id] = el;
+  });
+
+  // ---- 2. 准备对话气泡 ----
+  const speakerEl = dialogueEl.querySelector('.speaker');
+  const textEl = dialogueEl.querySelector('.text');
+  if (SCENE.dialogue && SCENE.dialogue.text) {
+    speakerEl.textContent = SCENE.dialogue.speaker || '';
+    textEl.textContent = SCENE.dialogue.text;
+  }
+
+  // ---- 3. timeline 执行器（按 beats 时间触发动画）----
+  // 渲染总时长 = 最后一个 beat 的 t + 1.5s（留尾巴）
+  const lastT = SCENE.beats.length > 0
+    ? Math.max.apply(null, SCENE.beats.map(function(b){ return b.t || 0; }))
+    : 0;
+  const TOTAL_DURATION_MS = Math.max(2000, lastT * 1000 + 1500);
+
+  SCENE.beats.forEach(function(beat) {
+    const delayMs = (beat.t || 0) * 1000;
+    setTimeout(function() {
+      handleBeat(beat);
+    }, delayMs);
+  });
+
+  function handleBeat(beat) {
+    const target = beat.target;
+    const value = beat.value;
+    if (!target) return;
+
+    // char_id.expression
+    if (target.indexOf('.') > 0) {
+      const parts = target.split('.');
+      const charId = parts[0];
+      const attr = parts[1];
+      const el = charEls[charId];
+      if (!el) return;
+
+      if (attr === 'expression') {
+        // 表情切换：根据 value 选动画
+        el.classList.remove('bounce', 'shake');
+        // 触发 reflow 重启动画
+        void el.offsetWidth;
+        if (value === 'surprised' || value === 'happy') {
+          el.classList.add('bounce');
+        } else if (value === 'angry' || value === 'sad') {
+          el.classList.add('shake');
+        }
+      }
+    }
+    // dialogue.bubble
+    else if (target === 'dialogue.bubble') {
+      const anim = SCENE.dialogue.animation || 'pop';
+      dialogueEl.classList.remove('anim-pop', 'anim-fade', 'anim-slide', 'anim-typewriter');
+      void dialogueEl.offsetWidth;
+      dialogueEl.classList.add('anim-' + anim);
+
+      // typewriter 逐字显示
+      if (anim === 'typewriter' && SCENE.dialogue.text) {
+        const fullText = SCENE.dialogue.text;
+        textEl.textContent = '';
+        let i = 0;
+        const typer = setInterval(function() {
+          if (i < fullText.length) {
+            textEl.textContent += fullText[i];
+            i++;
+          } else {
+            clearInterval(typer);
+          }
+        }, 60);
+      }
+    }
+    // scene.transition
+    else if (target === 'scene.transition') {
+      flashEl.classList.remove('fire');
+      void flashEl.offsetWidth;
+      flashEl.classList.add('fire');
+    }
+  }
+
+  // ---- 4. 通知录制完成 ----
+  // SceneRenderer 在 TOTAL_DURATION_MS 后停止 MediaRecorder
+  console.log('RENDER_DURATION_MS=' + TOTAL_DURATION_MS);
+  window.__RENDER_DURATION_MS = TOTAL_DURATION_MS;
+
+  // 标记渲染就绪（WebView onPageFinished 之后的实际首帧由此触发）
+  window.__RENDER_READY = true;
+  if (typeof window.__ON_RENDER_READY === 'function') {
+    window.__ON_RENDER_READY(TOTAL_DURATION_MS);
+  }
+})();
+</script>
+</body>
+</html>

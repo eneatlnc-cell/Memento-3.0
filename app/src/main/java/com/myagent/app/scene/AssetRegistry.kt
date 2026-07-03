@@ -1,95 +1,60 @@
 package com.myagent.app.scene
 
-import android.content.Context
-import android.util.Log
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
-
 /**
- * 资源词典加载器 —— 从 assets/asset_registry.json 读取可用 assetRef 集合。
+ * 动态素材注册表 —— 运行时把用户输入的图片/视频关键帧注册为临时素材。
  *
- * 作用：
- * - 构造 prompt 时注入合法 assetRef 列表，让 LLM 只能从词典里选（第二刀）
- * - SceneValidator 兜底校验时，把非法 assetRef 降级为角色默认资源
+ * 架构定位（Memento 是引擎，不是素材库）：
+ * - Memento 不内置任何角色素材，不知道"哈士奇"长什么样
+ * - 用户发送的图片/视频采样后注册为 user_media_* 资源
+ * - LLM 在场景 JSON 中引用 assetRef，渲染器据此查找本地文件
  *
- * 词典格式见 assets/asset_registry.json。角色与资源扩展时改 JSON 即可，无需改代码。
+ * Skill 市场上线后，第三方素材包会注册到各自的 Skill 目录下，
+ * Memento 只需扩展本接口的实现，渲染层无需改动。
  */
-class AssetRegistry(private val context: Context) {
-  companion object {
-    private const val TAG = "AssetRegistry"
-    private const val ASSET_FILE = "asset_registry.json"
+class AssetRegistry {
+  /** 单个素材条目 */
+  data class Asset(
+    val ref: String,        // assetRef，如 "user_media_0"
+    val filePath: String,   // 本地绝对路径
+    val description: String, // 语义描述，注入 prompt 让 LLM 理解素材内容
+  )
+
+  private val assets = mutableListOf<Asset>()
+  private var nextId = 0
+
+  /** 注册一个素材，返回分配的 assetRef */
+  fun register(filePath: String, description: String): String {
+    val ref = "user_media_$nextId"
+    nextId++
+    assets.add(Asset(ref, filePath, description))
+    return ref
   }
 
-  @Serializable
-  private data class RegistryFile(
-    val version: String = "1.0",
-    val characters: Map<String, CharacterEntry> = emptyMap(),
-    val layouts: List<String> = listOf("fullscreen", "split", "overlay"),
-    val animations: List<String> = listOf("pop", "fade", "typewriter", "slide"),
-  )
+  /** 按 assetRef 查找素材文件路径（渲染器调用） */
+  fun resolve(assetRef: String): Asset? = assets.firstOrNull { it.ref == assetRef }
 
-  @Serializable
-  private data class CharacterEntry(
-    val name: String = "",
-    val defaultAsset: String = "",
-    val assets: List<AssetEntry> = emptyList(),
-  )
-
-  @Serializable
-  private data class AssetEntry(
-    val ref: String = "",
-    val desc: String = "",
-  )
-
-  private val json = Json { ignoreUnknownKeys = true; isLenient = true }
-
-  private val registry: RegistryFile by lazy { loadRegistry() }
-
-  private fun loadRegistry(): RegistryFile {
-    return try {
-      context.assets.open(ASSET_FILE).bufferedReader().use { reader ->
-        json.decodeFromString(RegistryFile.serializer(), reader.readText())
-      }
-    } catch (e: Exception) {
-      Log.w(TAG, "Failed to load asset registry, using empty: ${e.message}")
-      RegistryFile()
-    }
+  /** 清空所有注册的素材（场景生成完成后调用，释放引用） */
+  fun clear() {
+    assets.clear()
+    nextId = 0
   }
-
-  /** 合法 layout 集合（第一刀 enum 的运行时镜像） */
-  fun validLayouts(): Set<String> = registry.layouts.toSet()
-
-  /** 合法 animation 集合 */
-  fun validAnimations(): Set<String> = registry.animations.toSet()
 
   /**
-   * 构造注入 prompt 的资源词典文本，让 LLM 知道可选 assetRef。
-   * 只列出当前注册的角色及其资源，避免 prompt 过长撑爆 0.8B 的 context。
+   * 构造注入 prompt 的素材描述文本。
+   * 让 LLM 知道每个 assetRef 对应什么内容，零额外推理成本。
    */
   fun buildPromptDictionary(): String {
-    if (registry.characters.isEmpty()) {
-      return "（资源词典为空，请让角色使用默认描述）"
+    if (assets.isEmpty()) {
+      return "（本次无素材，请根据用户描述用纯文字构思场景）"
     }
     return buildString {
-      append("可用角色与资源（assetRef 只能从以下列表选）：\n")
-      registry.characters.forEach { (charId, entry) ->
-        append("- 角色 $charId（${entry.name}）：")
-        append(entry.assets.joinToString("、") { "${it.ref}（${it.desc}）" })
-        append('\n')
+      append("可用素材（assetRef 只能从以下列表选）：\n")
+      assets.forEach { a ->
+        append("- ${a.ref}（${a.description}）\n")
       }
     }
   }
 
-  /**
-   * 兜底校验：assetRef 非法时降级为角色默认资源。
-   * 返回修正后的 assetRef（合法原值 / 角色默认 / 空字符串）。
-   */
-  fun resolveAssetRef(characterName: String, assetRef: String): String {
-    // 直接命中
-    val charEntry = registry.characters.values.firstOrNull { it.name == characterName }
-      ?: return assetRef // 未注册的角色，保持原值（grammar 已约束结构）
-    if (charEntry.assets.any { it.ref == assetRef }) return assetRef
-    // 降级到默认
-    return charEntry.defaultAsset
-  }
+  /** 是否已注册素材 */
+  fun hasAssets(): Boolean = assets.isNotEmpty()
 }
