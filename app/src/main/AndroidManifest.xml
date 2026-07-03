@@ -13,16 +13,6 @@
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
 
-    <!-- llama.cpp 骁龙硬件加速所需的原生库声明（系统库，不打包） -->
-    <!-- Adreno GPU OpenCL 后端 -->
-    <uses-native-library
-        android:name="libOpenCL.so"
-        android:required="false" />
-    <!-- Hexagon NPU FastRPC 通道（HTP 后端运行时通过它与 DSP 通信） -->
-    <uses-native-library
-        android:name="libcdsprpc.so"
-        android:required="false" />
-
     <application
         android:name=".NodeApp"
         android:allowBackup="false"
@@ -35,6 +25,16 @@
         android:largeHeap="true"
         android:supportsRtl="true"
         android:theme="@style/Theme.Memento">
+        <!-- llama.cpp 骁龙硬件加速所需的原生库声明（系统库，不打包） -->
+        <!-- Adreno GPU OpenCL 后端 -->
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
+        <!-- Hexagon NPU FastRPC 通道（HTP 后端运行时通过它与 DSP 通信） -->
+        <uses-native-library
+            android:name="libcdsprpc.so"
+            android:required="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

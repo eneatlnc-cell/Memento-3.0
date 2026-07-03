@@ -14,7 +14,7 @@ import android.util.Log
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import kotlinx.coroutines.resume
+import kotlin.coroutines.resume
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -212,7 +212,7 @@ class SceneRenderer(private val context: Context) {
         // H-M3 修复：setup 阶段抛异常时清理已创建的资源
         Log.e(TAG, "Setup failed: ${e.message}", e)
         cleanupResources(recorder, virtualDisplay, webView, presentation)
-        if (cont.isActive) cont.resume(Result.Failure("渲染初始化失败：${e.message}")) {}
+        if (cont.isActive) cont.resume(Result.Failure("渲染初始化失败：${e.message}"))
       }
     }
   }
@@ -247,11 +247,11 @@ class SceneRenderer(private val context: Context) {
 
     if (outputFile.exists() && outputFile.length() > 0) {
       Log.i(TAG, "Recording done: ${outputFile.absolutePath} (${outputFile.length() / 1024}KB)")
-      if (cont.isActive) cont.resume(Result.Success(outputFile)) {}
+      if (cont.isActive) cont.resume(Result.Success(outputFile))
     } else {
       // F2 修复：失败时删除空文件，避免累积垃圾
       if (outputFile.exists() && outputFile.length() == 0L) outputFile.delete()
-      if (cont.isActive) cont.resume(Result.Failure("录制的视频文件为空")) {}
+      if (cont.isActive) cont.resume(Result.Failure("录制的视频文件为空"))
     }
   }
 

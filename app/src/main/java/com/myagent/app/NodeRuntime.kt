@@ -1,5 +1,6 @@
 package com.myagent.app
 
+import android.graphics.Bitmap
 import com.myagent.app.chat.ChatController
 import com.myagent.app.chat.ChatMessage
 import com.myagent.app.chat.OutgoingAttachment
