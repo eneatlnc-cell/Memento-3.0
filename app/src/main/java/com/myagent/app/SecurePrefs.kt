@@ -104,16 +104,13 @@ class SecurePrefs(context: Context) {
   }
 
   private fun loadOrCreateInstanceId(): String {
-    getString(instanceIdKey)?.trim()?.let { if (it.isNotBlank()) return it }
-    plainPrefs.getString(instanceIdKey, null)?.trim()?.let { legacy ->
-      if (legacy.isNotBlank()) {
-        putString(instanceIdKey, legacy)
-        plainPrefs.edit { remove(instanceIdKey) }
-        return legacy
-      }
-    }
+    // L-1 回退：instanceId 用 plainPrefs 同步读，避免在构造时触发
+    // EncryptedSharedPreferences.create()（主线程 Keystore 初始化）导致启动崩溃。
+    // instanceId 是随机 UUID 非敏感，明文存储风险可接受。
+    val existing = plainPrefs.getString(instanceIdKey, null)?.trim()
+    if (!existing.isNullOrBlank()) return existing
     val fresh = UUID.randomUUID().toString()
-    putString(instanceIdKey, fresh)
+    plainPrefs.edit { putString(instanceIdKey, fresh) }
     return fresh
   }
 }

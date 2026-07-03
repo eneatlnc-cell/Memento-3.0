@@ -57,13 +57,13 @@ class ModelInstaller(
 
     @Volatile var EXPECTED_MMPROJ_SHA256: String? = null
 
-    /** 主模型公读直链（cstcloud 对象存储，已验证支持 HEAD + Accept-Ranges） */
+    /** 主模型公读直链（Qwen3.5-0.8B-Q4_K_M.gguf） */
     @Volatile var MODEL_DOWNLOAD_URL: String =
-      "https://data.cstcloud.cn/api/file/download/file/a75e0442-38a2-4466-bb03-0a1554be4ef6-26e850cd938dc4760280749733031e8b"
+      "https://pan.vma.cc/pan/s/f4d4966a01/download/54e125d56fa41fe6eed66034f9fd4fa5"
 
-    /** mmproj 公读直链 */
+    /** mmproj 公读直链（mmproj-BF16.gguf） */
     @Volatile var MMPROJ_DOWNLOAD_URL: String =
-      "https://data.cstcloud.cn/api/file/download/file/deb10d1c-592f-4c07-b06f-866966342770-d62a75fa19bed916d83954056eaba447"
+      "https://pan.vma.cc/pan/s/fd596870fe/download/080b19fad35f6cad2f90594b011d1b33"
 
     private const val BUFFER_SIZE = 8192
     private const val CONNECT_TIMEOUT_MS = 15_000
