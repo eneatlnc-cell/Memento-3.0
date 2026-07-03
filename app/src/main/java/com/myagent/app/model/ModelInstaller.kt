@@ -57,13 +57,13 @@ class ModelInstaller(
 
     @Volatile var EXPECTED_MMPROJ_SHA256: String? = null
 
-    /** 主模型公读直链（Qwen3.5-0.8B-Q4_K_M.gguf） */
+    /** 主模型公读直链（Qwen3.5-0.8B-Q4_K_M.gguf，阿里云 OSS，支持 Range 断点续传） */
     @Volatile var MODEL_DOWNLOAD_URL: String =
-      "https://pan.vma.cc/pan/s/f4d4966a01/download/54e125d56fa41fe6eed66034f9fd4fa5"
+      "https://ljsour.oss-cn-beijing.aliyuncs.com/Qwen3.5-0.8B-Q4_K_M.gguf"
 
-    /** mmproj 公读直链（mmproj-BF16.gguf） */
+    /** mmproj 公读直链（mmproj-BF16.gguf，阿里云 OSS，支持 Range 断点续传） */
     @Volatile var MMPROJ_DOWNLOAD_URL: String =
-      "https://pan.vma.cc/pan/s/fd596870fe/download/080b19fad35f6cad2f90594b011d1b33"
+      "https://ljsour.oss-cn-beijing.aliyuncs.com/mmproj-BF16.gguf"
 
     private const val BUFFER_SIZE = 8192
     private const val CONNECT_TIMEOUT_MS = 15_000
