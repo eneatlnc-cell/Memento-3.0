@@ -57,13 +57,18 @@ class ModelInstaller(
 
     @Volatile var EXPECTED_MMPROJ_SHA256: String? = null
 
-    /** 主模型公读直链（Qwen3.5-0.8B-Q4_K_M.gguf，阿里云 OSS，支持 Range 断点续传） */
+    /** 主模型 OSS 原始地址（私有 bucket，匿名访问 403，仅作为 fallback；
+     *  正式下载通过 PresignUrlProvider 从 FC 获取预签名 URL） */
     @Volatile var MODEL_DOWNLOAD_URL: String =
-      "https://ljsour.oss-cn-beijing.aliyuncs.com/Qwen3.5-0.8B-Q4_K_M.gguf"
+      "https://kuak-07212785f2098850d6d71f5b7cb928f51a-opapalias.oss-cn-hangzhou.aliyuncs.com/Qwen3.5-0.8B-Q4_K_M.gguf"
 
-    /** mmproj 公读直链（mmproj-BF16.gguf，阿里云 OSS，支持 Range 断点续传） */
+    /** mmproj OSS 原始地址（私有 bucket，同上） */
     @Volatile var MMPROJ_DOWNLOAD_URL: String =
-      "https://ljsour.oss-cn-beijing.aliyuncs.com/mmproj-BF16.gguf"
+      "https://kuak-07212785f2098850d6d71f5b7cb928f51a-opapalias.oss-cn-hangzhou.aliyuncs.com/mmproj-BF16.gguf"
+
+    /** 函数计算预签名 URL 端点（FC 持有 AccessKey，生成临时签名 URL 返回客户端） */
+    @Volatile var FC_PRESIGN_ENDPOINT: String =
+      "https://memento-nqpaoineod.cn-hangzhou.fcapp.run/presign"
 
     private const val BUFFER_SIZE = 8192
     private const val CONNECT_TIMEOUT_MS = 15_000
@@ -168,13 +173,16 @@ class ModelInstaller(
     emit(ModelDownloadState.Downloading(0, 0, 0, 0))
 
     try {
-      // 获取两个文件的总大小
-      val modelUrl = resolveDownloadUrl(MODEL_DOWNLOAD_URL)
-      val mmprojUrl = resolveDownloadUrl(MMPROJ_DOWNLOAD_URL)
+      // 优先从 FC 获取预签名 URL（OSS bucket 私有，匿名访问 403）。
+      // FC 失败则回退到 resolveDownloadUrl（token 签名 / 原始 URL）。
+      val presignUrls = PresignUrlProvider.fetch(FC_PRESIGN_ENDPOINT)
+      val modelUrl = presignUrls?.modelUrl ?: resolveDownloadUrl(MODEL_DOWNLOAD_URL)
+      val mmprojUrl = presignUrls?.mmprojUrl ?: resolveDownloadUrl(MMPROJ_DOWNLOAD_URL)
+      Log.i("ModelInstaller", "Download URLs: presign=${presignUrls != null}")
       val modelSize = fetchContentLength(modelUrl)
       val mmprojSize = fetchContentLength(mmprojUrl)
       if (modelSize <= 0 || mmprojSize <= 0) {
-        emit(ModelDownloadState.Failed("无法获取模型文件信息，请检查网络连接"))
+        emit(ModelDownloadState.Failed("无法获取模型文件信息，请检查网络连接或 FC 服务"))
         return@flow
       }
       val totalSize = modelSize + mmprojSize
