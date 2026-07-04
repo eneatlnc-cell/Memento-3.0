@@ -69,16 +69,30 @@ fun RootScreen(viewModel: MainViewModel) {
   // 不再依赖 downloadState 做回退 — 修复"模型未安装也能进入主界面"的 bug
   val modelReady = modelFileExists
 
+  // startDestination 必须是稳定常量，不可依赖 runtimeInitialized 等异步状态。
+  // 否则 runtimeInitialized 从 false→true 时 startDestination 在 SPLASH/SHELL 间跳变，
+  // 导致 NavHost back stack 与 startDestination 撕裂崩溃。
+  // SPLASH→SHELL 的跳转改由下方 LaunchedEffect 显式管理。
   val startDestination = when {
     !welcomeDone -> Routes.WELCOME
     !isActivated -> Routes.ACTIVATION
     !onboardingCompleted -> Routes.ONBOARDING
     !modelReady -> Routes.ONBOARDING
-    !runtimeInitialized -> Routes.SPLASH
-    else -> Routes.SHELL
+    else -> Routes.SPLASH  // 模型就绪后统一从 SPLASH 启动，等待 runtime 初始化完成再跳 SHELL
   }
 
   val navController = rememberNavController()
+
+  // SPLASH → SHELL 跳转：等待 runtime 初始化完成（JNI 模型加载，数秒）。
+  // 不使用固定 delay，避免 runtime 未就绪时强行进入 SHELL 导致状态撕裂。
+  // 仅在当前处于 SPLASH 时触发导航，避免重复跳转。
+  LaunchedEffect(runtimeInitialized) {
+    if (runtimeInitialized && navController.currentDestination?.route == Routes.SPLASH) {
+      navController.navigate(Routes.SHELL) {
+        popUpTo(Routes.SPLASH) { inclusive = true }
+      }
+    }
+  }
 
   NavHost(
     navController = navController,
@@ -88,8 +102,11 @@ fun RootScreen(viewModel: MainViewModel) {
     composable(Routes.SPLASH) {
       SplashScreen(
         onReady = {
-          navController.navigate(Routes.SHELL) {
-            popUpTo(Routes.SPLASH) { inclusive = true }
+          // 兜底：若 runtime 已就绪但 LaunchedEffect 未触发（理论上不会），允许手动跳转
+          if (runtimeInitialized && navController.currentDestination?.route == Routes.SPLASH) {
+            navController.navigate(Routes.SHELL) {
+              popUpTo(Routes.SPLASH) { inclusive = true }
+            }
           }
         },
         modifier = Modifier.fillMaxSize(),
@@ -122,7 +139,10 @@ fun RootScreen(viewModel: MainViewModel) {
         viewModel = viewModel,
         modifier = Modifier.fillMaxSize(),
         onComplete = {
-          navController.navigate(Routes.SHELL) {
+          // 不直接跳 SHELL：此时 runtimeInitialized 还是 false，跳 SHELL 会导致
+          // startDestination（SPLASH）与 back stack（SHELL）撕裂崩溃。
+          // 改为跳 SPLASH，由 LaunchedEffect(runtimeInitialized) 统一管理 SPLASH→SHELL。
+          navController.navigate(Routes.SPLASH) {
             popUpTo(Routes.ONBOARDING) { inclusive = true }
           }
         },
