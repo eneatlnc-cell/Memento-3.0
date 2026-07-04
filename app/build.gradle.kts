@@ -21,6 +21,17 @@ android {
     ndk {
       abiFilters += "arm64-v8a"  // llama.cpp 骁龙优化只支持 arm64-v8a
     }
+
+    // FC 签名认证凭证：从 local.properties 读取（不进 git），通过 BuildConfig 注入。
+    // local.properties 示例：
+    //   fc.accessKeyId=LTAI...
+    //   fc.accessKeySecret=...
+    val localProps = java.util.Properties().apply {
+      val f = rootProject.file("local.properties")
+      if (f.exists()) f.inputStream().use { load(it) }
+    }
+    buildConfigField("String", "FC_ACCESS_KEY_ID", "\"${localProps.getProperty("fc.accessKeyId", "")}\"")
+    buildConfigField("String", "FC_ACCESS_KEY_SECRET", "\"${localProps.getProperty("fc.accessKeySecret", "")}\"")
   }
 
   // 只编译我们自己的 JNI wrapper（libllama_jni.so），
