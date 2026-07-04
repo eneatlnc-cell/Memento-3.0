@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.ktlint)
@@ -7,6 +9,7 @@ plugins {
   alias(libs.plugins.kotlin.ksp)
 }
 
+@Suppress("DEPRECATION")
 android {
   namespace = "com.myagent.app"
   compileSdk = 37
@@ -26,9 +29,9 @@ android {
     // local.properties 示例：
     //   fc.accessKeyId=LTAI...
     //   fc.accessKeySecret=...
-    val localProps = java.util.Properties().apply {
+    val localProps = Properties().apply {
       val f = rootProject.file("local.properties")
-      if (f.exists()) f.inputStream().use { load(it) }
+      if (f.exists()) f.inputStream().use { stream -> load(stream) }
     }
     buildConfigField("String", "FC_ACCESS_KEY_ID", "\"${localProps.getProperty("fc.accessKeyId", "")}\"")
     buildConfigField("String", "FC_ACCESS_KEY_SECRET", "\"${localProps.getProperty("fc.accessKeySecret", "")}\"")
@@ -78,7 +81,7 @@ android {
     jniLibs {
       // libllama.so 是合体库（含 Hexagon NPU + OpenCL 后端静态链接），
       // strip 可能破坏 HTP 后端的特殊段；libllama_jni.so 体量小无需保护
-      doNotStrip += listOf("**/libllama.so")
+      keepDebugSymbols += listOf("**/libllama.so")
     }
   }
 

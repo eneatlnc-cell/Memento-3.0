@@ -42,11 +42,17 @@ class ModelInstaller(
   private val activationManager: ActivationManager? = null,
 ) {
   companion object {
-    /** 主模型文件名（Qwen3.5-0.8B Q4_K_M） */
+    /** 主模型文件名（Qwen3.5-0.8B Q4_K_M） — 本地存储名（小写） */
     const val MODEL_FILE_NAME = "qwen3.5-0.8b-q4_k_m.gguf"
 
-    /** 视觉投影器文件名（mmproj BF16） */
+    /** 视觉投影器文件名（mmproj BF16） — 本地存储名 */
     const val MMPROJ_FILE_NAME = "mmproj-BF16.gguf"
+
+    /** OSS 上的实际对象名（大小写敏感，必须与 OSS bucket 一致）。
+     *  本地存储用小写（历史原因），OSS 用原始大小写，二者不一致，故单独定义。
+     *  FC 函数直接用此名作为 OSS key，无需映射。 */
+    const val OSS_MODEL_OBJECT_NAME = "Qwen3.5-0.8B-Q4_K_M.gguf"
+    const val OSS_MMPROJ_OBJECT_NAME = "mmproj-BF16.gguf"
 
     /**
      * SHA256 校验值。
@@ -66,9 +72,10 @@ class ModelInstaller(
     @Volatile var MMPROJ_DOWNLOAD_URL: String =
       "https://kuak-07212785f2098850d6d71f5b7cb928f51a-opapalias.oss-cn-hangzhou.aliyuncs.com/mmproj-BF16.gguf"
 
-    /** 函数计算预签名 URL 端点（FC 持有 AccessKey，生成临时签名 URL 返回客户端） */
+    /** 函数计算预签名 URL 端点（FC 持有 AccessKey，生成临时签名 URL 返回客户端）。
+     *  调用方式：GET {endpoint}?file=<文件名> → {"url":"..."} */
     @Volatile var FC_PRESIGN_ENDPOINT: String =
-      "https://memento-nqpaoineod.cn-hangzhou.fcapp.run/presign"
+      "https://memento-nqpaoineod.cn-hangzhou.fcapp.run"
 
     private const val BUFFER_SIZE = 8192
     private const val CONNECT_TIMEOUT_MS = 15_000
@@ -174,15 +181,34 @@ class ModelInstaller(
 
     try {
       // 优先从 FC 获取预签名 URL（OSS bucket 私有，匿名访问 403）。
-      // FC 失败则回退到 resolveDownloadUrl（token 签名 / 原始 URL）。
-      val presignUrls = PresignUrlProvider.fetch(FC_PRESIGN_ENDPOINT)
-      val modelUrl = presignUrls?.modelUrl ?: resolveDownloadUrl(MODEL_DOWNLOAD_URL)
-      val mmprojUrl = presignUrls?.mmprojUrl ?: resolveDownloadUrl(MMPROJ_DOWNLOAD_URL)
-      Log.i("ModelInstaller", "Download URLs: presign=${presignUrls != null}")
+      // FC 接口：GET {endpoint}?file=<文件名> → {"url":"..."}
+      // 分别对 model 和 mmproj 调用一次。
+      val modelUrl: String
+      val mmprojUrl: String
+      when (val modelResult = PresignUrlProvider.fetch(FC_PRESIGN_ENDPOINT, OSS_MODEL_OBJECT_NAME)) {
+        is PresignUrlProvider.PresignResult.Success -> {
+          modelUrl = modelResult.url
+          Log.i("ModelInstaller", "Got model presign URL")
+        }
+        is PresignUrlProvider.PresignResult.Failure -> {
+          emit(ModelDownloadState.Failed("FC 获取模型预签名失败：${modelResult.reason}"))
+          return@flow
+        }
+      }
+      when (val mmprojResult = PresignUrlProvider.fetch(FC_PRESIGN_ENDPOINT, OSS_MMPROJ_OBJECT_NAME)) {
+        is PresignUrlProvider.PresignResult.Success -> {
+          mmprojUrl = mmprojResult.url
+          Log.i("ModelInstaller", "Got mmproj presign URL")
+        }
+        is PresignUrlProvider.PresignResult.Failure -> {
+          emit(ModelDownloadState.Failed("FC 获取 mmproj 预签名失败：${mmprojResult.reason}"))
+          return@flow
+        }
+      }
       val modelSize = fetchContentLength(modelUrl)
       val mmprojSize = fetchContentLength(mmprojUrl)
       if (modelSize <= 0 || mmprojSize <= 0) {
-        emit(ModelDownloadState.Failed("无法获取模型文件信息，请检查网络连接或 FC 服务"))
+        emit(ModelDownloadState.Failed("无法获取模型文件大小（OSS 拒绝访问或网络错误），请检查 FC 预签名 URL 是否有效"))
         return@flow
       }
       val totalSize = modelSize + mmprojSize
@@ -282,17 +308,35 @@ class ModelInstaller(
   private fun fetchContentLength(urlStr: String): Long {
     var connection: HttpURLConnection? = null
     try {
+      // 不能用 HEAD：OSS 预签名 URL 是用 GET 方法签名的，HEAD 请求会签名不匹配 → 403。
+      // 改用 GET + Range: bytes=0-0：仅请求 1 字节，从 Content-Range 解析总大小。
+      // 服务器不支持 Range 时返回 200 + Content-Length（完整大小），也能拿到。
       connection = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-        requestMethod = "HEAD"
+        requestMethod = "GET"
         connectTimeout = CONNECT_TIMEOUT_MS
         readTimeout = READ_TIMEOUT_MS
         setRequestProperty("User-Agent", "Memento/3.1")
+        setRequestProperty("Range", "bytes=0-0")
+        instanceFollowRedirects = true
       }
-      val length = connection.contentLengthLong
-      Log.i("ModelInstaller", "HEAD $urlStr → Content-Length: $length, response: ${connection.responseCode}")
-      return if (length > 0) length else -1
+      val code = connection.responseCode
+      // 206 (Partial Content) → Content-Range: bytes 0-0/总大小
+      // 200 (不支持 Range) → Content-Length: 完整大小
+      if (code != HttpURLConnection.HTTP_OK && code != HttpURLConnection.HTTP_PARTIAL) {
+        Log.e("ModelInstaller", "fetchContentLength failed: HTTP $code for $urlStr")
+        return -1
+      }
+      val contentRange = connection.getHeaderField("Content-Range")
+      val size = if (contentRange != null) {
+        // 格式：bytes 0-0/12345678
+        contentRange.substringAfterLast("/").toLongOrNull() ?: -1L
+      } else {
+        connection.contentLengthLong
+      }
+      Log.i("ModelInstaller", "GET Range $urlStr → size=$size, response=$code, contentRange=$contentRange")
+      return if (size > 0) size else -1
     } catch (e: Exception) {
-      Log.e("ModelInstaller", "HEAD request failed: ${e.message}", e)
+      Log.e("ModelInstaller", "fetchContentLength failed: ${e.message}", e)
       return -1
     } finally {
       connection?.disconnect()
@@ -306,6 +350,14 @@ class ModelInstaller(
     totalSize: Long,
     onProgress: (downloadedBytes: Long, speedBytesPerSec: Long) -> Unit,
   ) {
+    // 防护：文件已完整下载（重试场景，model 下载完后 mmproj 失败，重试时 model 不需要重下）。
+    // 若不跳过，Range: bytes=modelSize- 会触发 OSS 返回 416 Range Not Satisfiable。
+    if (totalSize > 0 && existingBytes >= totalSize) {
+      Log.i("ModelInstaller", "File already complete, skip download: ${target.name} ($existingBytes/$totalSize)")
+      onProgress(existingBytes, 0)
+      return
+    }
+
     var connection: HttpURLConnection? = null
     var input: InputStream? = null
     var output: FileOutputStream? = null
@@ -325,7 +377,13 @@ class ModelInstaller(
       if (responseCode != HttpURLConnection.HTTP_OK &&
         responseCode != HttpURLConnection.HTTP_PARTIAL
       ) {
-        throw IOException("服务器返回错误：$responseCode")
+        // 403 通常是预签名 URL 过期或签名错误；其他错误码直接透传
+        val hint = when (responseCode) {
+          403 -> "OSS 拒绝访问（HTTP 403）：预签名 URL 可能已过期或签名无效"
+          404 -> "文件不存在（HTTP 404）：检查 OSS bucket/对象路径"
+          else -> "服务器返回错误：$responseCode"
+        }
+        throw IOException(hint)
       }
 
       // H-N3 修复：服务端不支持 Range 请求时返回 200（完整文件）而非 206（部分内容）。

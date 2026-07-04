@@ -80,7 +80,10 @@ class NodeRuntime(
 
     downloadJob?.cancel()
     downloadJob = scope.launch {
-      modelInstaller.downloadModel().collect { state ->
+      // 用 downloadModelWithRetry 而非 downloadModel：移动端公网下载大文件（~700MB）
+      // 易因网络抖动中断，单次下载失败即报错体验差。WithRetry 提供 3 次自动重试 +
+      // 断点续传（downloadFile 以 modelFile.length() 为 existingBytes 请求 Range）。
+      modelInstaller.downloadModelWithRetry().collect { state ->
         _downloadState.value = state
         if (state is ModelDownloadState.Completed && modelInstaller.isModelReady()) {
           val modelPath = modelInstaller.getModelPath().absolutePath
