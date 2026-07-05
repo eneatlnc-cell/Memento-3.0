@@ -305,6 +305,131 @@ class ModelInstaller(
     }
   }.flowOn(Dispatchers.IO)
 
+  /**
+   * 分批下载：仅下载主模型文件（~500MB），不下载 mmproj。
+   * 用于分批策略：先下模型 → 激活引擎 → 再下 mmproj → 重新加载。
+   */
+  fun downloadModelFileOnly(): Flow<ModelDownloadState> = flow {
+    val modelFile = getModelPath()
+    modelFile.parentFile?.mkdirs()
+
+    if (modelFile.exists() && modelFile.length() == 0L) modelFile.delete()
+    if (isFileReady(modelFile, EXPECTED_MODEL_SHA256)) {
+      emit(ModelDownloadState.Completed)
+      return@flow
+    }
+
+    emit(ModelDownloadState.Downloading(0, 0, 0, 0))
+
+    try {
+      val modelUrl: String
+      when (val result = PresignUrlProvider.fetch(FC_PRESIGN_ENDPOINT, OSS_MODEL_OBJECT_NAME)) {
+        is PresignUrlProvider.PresignResult.Success -> modelUrl = result.url
+        is PresignUrlProvider.PresignResult.Failure -> {
+          emit(ModelDownloadState.Failed("FC 获取模型预签名失败：${result.reason}"))
+          return@flow
+        }
+      }
+      val modelSize = fetchContentLength(modelUrl)
+      if (modelSize <= 0) {
+        emit(ModelDownloadState.Failed("无法获取模型文件大小"))
+        return@flow
+      }
+
+      coroutineScope {
+        val progressChannel = Channel<Pair<Long, Long>>(Channel.CONFLATED)
+        val downloadJob = launch(Dispatchers.IO) {
+          try {
+            downloadFile(modelUrl, modelFile, modelFile.length(), modelSize) { downloaded, speed ->
+              progressChannel.trySend(downloaded to speed)
+            }
+          } finally {
+            progressChannel.close()
+          }
+        }
+        for ((downloaded, speed) in progressChannel) {
+          val pct = if (modelSize > 0) (downloaded * 100 / modelSize).toInt().coerceIn(0, 100) else 0
+          emit(ModelDownloadState.Downloading(pct, downloaded, modelSize, speed))
+        }
+      }
+
+      emit(ModelDownloadState.Verifying)
+      if (!isFileReady(modelFile, EXPECTED_MODEL_SHA256)) {
+        emit(ModelDownloadState.Failed("模型文件校验失败，请重试"))
+        return@flow
+      }
+      emit(ModelDownloadState.Completed)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: IOException) {
+      emit(ModelDownloadState.Failed("下载中断：${e.message ?: "网络错误"}"))
+    } catch (e: Exception) {
+      emit(ModelDownloadState.Failed("下载失败：${e.message ?: "未知错误"}"))
+    }
+  }.flowOn(Dispatchers.IO)
+
+  /**
+   * 分批下载：仅下载 mmproj 文件（~200MB），不下载主模型。
+   */
+  fun downloadMmprojFileOnly(): Flow<ModelDownloadState> = flow {
+    val mmprojFile = getMmprojPath()
+    mmprojFile.parentFile?.mkdirs()
+
+    if (mmprojFile.exists() && mmprojFile.length() == 0L) mmprojFile.delete()
+    if (isFileReady(mmprojFile, EXPECTED_MMPROJ_SHA256)) {
+      emit(ModelDownloadState.Completed)
+      return@flow
+    }
+
+    emit(ModelDownloadState.Downloading(0, 0, 0, 0))
+
+    try {
+      val mmprojUrl: String
+      when (val result = PresignUrlProvider.fetch(FC_PRESIGN_ENDPOINT, OSS_MMPROJ_OBJECT_NAME)) {
+        is PresignUrlProvider.PresignResult.Success -> mmprojUrl = result.url
+        is PresignUrlProvider.PresignResult.Failure -> {
+          emit(ModelDownloadState.Failed("FC 获取 mmproj 预签名失败：${result.reason}"))
+          return@flow
+        }
+      }
+      val mmprojSize = fetchContentLength(mmprojUrl)
+      if (mmprojSize <= 0) {
+        emit(ModelDownloadState.Failed("无法获取 mmproj 文件大小"))
+        return@flow
+      }
+
+      coroutineScope {
+        val progressChannel = Channel<Pair<Long, Long>>(Channel.CONFLATED)
+        val downloadJob = launch(Dispatchers.IO) {
+          try {
+            downloadFile(mmprojUrl, mmprojFile, mmprojFile.length(), mmprojSize) { downloaded, speed ->
+              progressChannel.trySend(downloaded to speed)
+            }
+          } finally {
+            progressChannel.close()
+          }
+        }
+        for ((downloaded, speed) in progressChannel) {
+          val pct = if (mmprojSize > 0) (downloaded * 100 / mmprojSize).toInt().coerceIn(0, 100) else 0
+          emit(ModelDownloadState.Downloading(pct, downloaded, mmprojSize, speed))
+        }
+      }
+
+      emit(ModelDownloadState.Verifying)
+      if (!isFileReady(mmprojFile, EXPECTED_MMPROJ_SHA256)) {
+        emit(ModelDownloadState.Failed("mmproj 文件校验失败，请重试"))
+        return@flow
+      }
+      emit(ModelDownloadState.Completed)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: IOException) {
+      emit(ModelDownloadState.Failed("下载中断：${e.message ?: "网络错误"}"))
+    } catch (e: Exception) {
+      emit(ModelDownloadState.Failed("下载失败：${e.message ?: "未知错误"}"))
+    }
+  }.flowOn(Dispatchers.IO)
+
   private fun fetchContentLength(urlStr: String): Long {
     var connection: HttpURLConnection? = null
     try {

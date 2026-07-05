@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * llama.cpp 推理引擎 — 业务层与原生 C API 之间的桥接。
@@ -43,6 +44,10 @@ class LlamaEngine(private val context: Context) {
   private val activeInferences = AtomicInteger(0)
   @Volatile private var closing = false
 
+  // C-N5 修复：防止并发 init() 调用导致 safeClose() 释放另一个线程刚加载的 JNI 资源。
+  // 两个线程同时调用 init() → 线程 2 的 safeClose() 会 closeInternal() 线程 1 刚加载的 model/ctx/mctx。
+  private val initializing = AtomicBoolean(false)
+
   // 串行化 JNI 推理：同一 ctx 上并发 llama_decode 会损坏 KV cache。
   // 场景生成（SceneDirector）与聊天回复共用同一引擎，必须串行执行。
   private val inferenceSemaphore = Semaphore(1)
@@ -50,6 +55,12 @@ class LlamaEngine(private val context: Context) {
   /** 当前使用的后端（用于日志/诊断） */
   var activeBackend: String = "unknown"
     private set
+
+  /**
+   * 调试开关：强制 CPU 模式（n_gpu_layers=0），用于排查 GPU/NPU 崩溃。
+   * 设为 true 后需重新调用 init() 生效。
+   */
+  @Volatile var forceCpuOnly: Boolean = false
 
   /**
    * 初始化引擎并加载模型。
@@ -63,63 +74,78 @@ class LlamaEngine(private val context: Context) {
    * @return true 表示初始化成功
    */
   fun init(modelPath: String, mmprojPath: String? = null, maxTokens: Int = 512): Boolean {
-    // 安全关闭旧引擎（等待推理退出），再初始化新的
-    safeClose()
+    // C-N5 修复：防止并发 init() 调用。
+    // 如果另一个线程正在 init() 中，直接返回 false（上层 LocalModelLoader.doInitialize
+    // 已有 CAS 保护，这里是最后一道防线）。
+    if (!initializing.compareAndSet(false, true)) {
+      Log.w(TAG, "init() already in progress on another thread, skipping")
+      return false
+    }
+    try {
+      // 安全关闭旧引擎（等待推理退出），再初始化新的
+      safeClose()
 
-    return synchronized(this) {
-      try {
-        LlamaNative.ensureLoaded()
-        LlamaNative.backendInit()
+      return synchronized(this) {
+        try {
+          LlamaNative.ensureLoaded()
+          LlamaNative.backendInit()
 
-        val caps = DeviceCapability.detect(context)
-        val useHtp = caps.canUseNpu  // 骁龙 8 + ≥12GB
-        val nGpuLayers = if (useHtp) 99 else 0
+          val caps = DeviceCapability.detect(context)
+          val useHtp = caps.canUseNpu && !forceCpuOnly
+          val nGpuLayers = if (useHtp) 99 else 0
 
-        activeBackend = if (useHtp) "Hexagon-NPU+OpenCL" else "CPU-4threads"
+          activeBackend = if (forceCpuOnly) "CPU-4threads (forced)" 
+            else if (useHtp) "Hexagon-NPU+OpenCL" 
+            else "CPU-4threads"
 
-        // 1) 加载模型
-        model = LlamaNative.modelLoad(modelPath, nGpuLayers, useHtp)
-        if (model == 0L) {
-          Log.e(TAG, "Model load failed: $modelPath")
-          activeBackend = "failed"
-          return false
-        }
-
-        // 2) 创建上下文
-        // KV Cache 根据 RAM 动态调整
-        val nCtx = when {
-          caps.totalRamGb >= 12 -> 4096
-          caps.totalRamGb >= 8 -> 2048
-          else -> 1024
-        }
-        ctx = LlamaNative.contextInit(model, nCtx, nThreads = 4, nBatch = 512)
-        if (ctx == 0L) {
-          Log.e(TAG, "Context init failed")
-          activeBackend = "failed"
-          closeInternal()
-          return false
-        }
-
-        // 3) 加载 mmproj（多模态）
-        if (mmprojPath != null) {
-          mctx = LlamaNative.mtmdInit(model, mmprojPath)
-          if (mctx == 0L) {
-            Log.w(TAG, "mmproj load failed, falling back to text-only: $mmprojPath")
-            // 不 return false——纯文本仍可用
+          Log.i(TAG, "init: modelLoad START — path=$modelPath, nGpuLayers=$nGpuLayers, useHtp=$useHtp, forceCpuOnly=$forceCpuOnly")
+          // 1) 加载模型
+          model = LlamaNative.modelLoad(modelPath, nGpuLayers, useHtp)
+          if (model == 0L) {
+            Log.e(TAG, "Model load failed: $modelPath")
+            activeBackend = "failed"
+            return@synchronized false
           }
-        }
+          Log.i(TAG, "init: modelLoad OK, now contextInit...")
 
-        Log.i(TAG, "LlamaEngine ready: $modelPath ($activeBackend, nCtx=$nCtx, mmproj=${mmprojPath != null})")
-        return true
-      } catch (e: UnsatisfiedLinkError) {
-        Log.e(TAG, "Native lib not loaded: ${e.message}", e)
-        activeBackend = "no-native-lib"
-        return false
-      } catch (e: Exception) {
-        Log.e(TAG, "Init failed: ${e.message}", e)
-        activeBackend = "error"
-        return false
+          // 2) 创建上下文
+          // KV Cache 根据 RAM 动态调整
+          val nCtx = when {
+            caps.totalRamGb >= 12 -> 4096
+            caps.totalRamGb >= 8 -> 2048
+            else -> 1024
+          }
+          ctx = LlamaNative.contextInit(model, nCtx, nThreads = 4, nBatch = 512)
+          if (ctx == 0L) {
+            Log.e(TAG, "Context init failed")
+            activeBackend = "failed"
+            closeInternal()
+            return@synchronized false
+          }
+
+          // 3) 加载 mmproj（多模态）
+          if (mmprojPath != null) {
+            mctx = LlamaNative.mtmdInit(model, mmprojPath)
+            if (mctx == 0L) {
+              Log.w(TAG, "mmproj load failed, falling back to text-only: $mmprojPath")
+              // 不 return false——纯文本仍可用
+            }
+          }
+
+          Log.i(TAG, "LlamaEngine ready: $modelPath ($activeBackend, nCtx=$nCtx, mmproj=${mmprojPath != null})")
+          return@synchronized true
+        } catch (e: UnsatisfiedLinkError) {
+          Log.e(TAG, "Native lib not loaded: ${e.message}", e)
+          activeBackend = "no-native-lib"
+          return@synchronized false
+        } catch (e: Exception) {
+          Log.e(TAG, "Init failed: ${e.message}", e)
+          activeBackend = "error"
+          return@synchronized false
+        }
       }
+    } finally {
+      initializing.set(false)
     }
   }
 

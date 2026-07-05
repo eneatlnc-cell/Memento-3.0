@@ -105,6 +105,18 @@ static bool g_backend_initialized = false;
 // 从而让 close() 能安全等待推理退出后再 free ctx，避免 UAF。
 static std::atomic<bool> g_cancel_flag{false};
 
+// ── llama.cpp 日志回调：转发到 Android logcat ──
+static void llama_log_callback(enum lm_ggml_log_level level, const char *text, void *) {
+  if (text == nullptr) return;
+  // 过滤掉高频噪音（CONT 级别和性能计数器）
+  if (level == LM_GGML_LOG_LEVEL_CONT) return;
+  int prio = ANDROID_LOG_INFO;
+  if (level >= LM_GGML_LOG_LEVEL_ERROR) prio = ANDROID_LOG_ERROR;
+  else if (level >= LM_GGML_LOG_LEVEL_WARN) prio = ANDROID_LOG_WARN;
+  else if (level <= LM_GGML_LOG_LEVEL_DEBUG) prio = ANDROID_LOG_DEBUG;
+  __android_log_print(prio, "llama.cpp", "%s", text);
+}
+
 extern "C" {
 
 // ===== cancel =====
@@ -119,9 +131,11 @@ Java_com_myagent_app_model_LlamaNative_cancelCompletion(JNIEnv *, jobject) {
 JNIEXPORT void JNICALL
 Java_com_myagent_app_model_LlamaNative_backendInit(JNIEnv *, jobject) {
   if (!g_backend_initialized) {
+    // 注册日志回调，把 llama.cpp 内部日志转发到 Android logcat
+    llama_log_set(llama_log_callback, nullptr);
     llama_backend_init();
     g_backend_initialized = true;
-    LOGI("llama_backend_init done");
+    LOGI("llama_backend_init done (log callback registered, tag=llama.cpp)");
   }
 }
 
@@ -144,24 +158,33 @@ Java_com_myagent_app_model_LlamaNative_modelLoad(
     return 0;
   }
   const char *path = env->GetStringUTFChars(jpath, nullptr);
+
+  LOGI("modelLoad: path=%s, n_gpu_layers=%d, useHtp=%d", path, nGpuLayers, (int)useHtp);
+
   llama_model_params params = llama_model_default_params();
   params.n_gpu_layers = nGpuLayers;
+  // 禁用 mmap：Android 的 mmap 某些场景下不稳定（如文件在外部存储）
+  // 且 mmap 失败时会静默 fallback，不会报错
+  params.use_mmap = false;
 
   // Hexagon NPU 设备路由：骁龙 SM8450+ 通过 HTP0 激活 NPU
-  // 注意：devices 字段在某些 llama.cpp 版本可能叫 n_devices/devices，
-  // 这里用最保守的方式——n_gpu_layers > 0 + useHtp 标志，
-  // 实际后端选择由 .so 编译时 GGML_HEXAGON=ON 决定
-  (void)useHtp;  // 预留：未来若需显式 --device HTP0 再实现
+  (void)useHtp;
 
+  LOGI("modelLoad: calling llama_model_load_from_file...");
   llama_model *model = llama_model_load_from_file(path, params);
 
-  // H-S4 修复：日志在 release 之前使用 path，避免 UAF
   if (model == nullptr) {
-    LOGE("model load failed: %s", path);
+    LOGE("model load failed: %s (n_gpu_layers=%d)", path, nGpuLayers);
     env->ReleaseStringUTFChars(jpath, path);
     return 0;
   }
-  LOGI("model loaded: %s (n_gpu_layers=%d)", path, nGpuLayers);
+
+  // 输出模型诊断信息
+  int64_t n_params = llama_model_n_params(model);
+  char desc[256];
+  llama_model_desc(model, desc, sizeof(desc));
+  LOGI("model loaded: %s, n_params=%lld, n_gpu_layers=%d", desc, (long long)n_params, nGpuLayers);
+
   env->ReleaseStringUTFChars(jpath, path);
   return reinterpret_cast<jlong>(model);
 }

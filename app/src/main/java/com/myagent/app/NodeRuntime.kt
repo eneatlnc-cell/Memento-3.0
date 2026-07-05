@@ -19,6 +19,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Memento v3.1 运行时 — 管理 UI 状态、聊天控制器、模型加载器、下载状态。
@@ -50,12 +52,12 @@ class NodeRuntime(
     LocalModelLoader(app, path, mmproj)
   }
 
-  // 标记是否已对 modelLoader 执行过 init/reload，避免重复加载
-  @Volatile private var modelLoaderInitialized = false
+  // C-N5 修复：用 AtomicBoolean 替代 @Volatile，确保 check-and-set 原子性。
+  // 原 @Volatile 只保证可见性，不保证 CAS，两个线程可同时通过检查。
+  private val modelLoaderInitialized = AtomicBoolean(false)
 
-  // 模型加载互斥锁 — 保护 modelLoader.reload/unload 与 modelLoaderInitialized 标志，
-  // 防止 startModelDownload 完成后的 reload 与 ensureModelLoaded 并发执行导致 JNI 状态混乱
-  private val modelLock = Any()
+  // 正在初始化中（由 startModelDownload 协程设置），防止 ensureModelLoaded 并行触发第二次 init。
+  private val modelLoaderInitializing = AtomicBoolean(false)
 
   // 聊天控制器
   val chatController = ChatController(scope, modelLoader, memoryManager, app.cacheDir, app.contentResolver, app)
@@ -75,7 +77,10 @@ class NodeRuntime(
   private var downloadJob: Job? = null
 
   /**
-   * 触发模型下载。如果已完成或正在下载则忽略。
+   * 触发模型下载。顺序：
+   * ① 下载 mmproj.gguf（~200MB）
+   * ② 下载主模型 Qwen.gguf（~500MB）
+   * ③ 同时加载主模型 + mmproj → 引擎一次性初始化完成
    */
   fun startModelDownload() {
     if (_downloadState.value is ModelDownloadState.Completed ||
@@ -84,15 +89,39 @@ class NodeRuntime(
 
     downloadJob?.cancel()
     downloadJob = scope.launch {
-      // 用 downloadModelWithRetry 而非 downloadModel：移动端公网下载大文件（~700MB）
-      // 易因网络抖动中断，单次下载失败即报错体验差。WithRetry 提供 3 次自动重试 +
-      // 断点续传（downloadFile 以 modelFile.length() 为 existingBytes 请求 Range）。
-      modelInstaller.downloadModelWithRetry().collect { state ->
+      // ═══════════════ ① 下载 mmproj ═══════════════
+      var mmprojDone = false
+      modelInstaller.downloadMmprojFileOnly().collect { state ->
         _downloadState.value = state
-        if (state is ModelDownloadState.Completed && modelInstaller.isModelReady()) {
-          // 下载完成后加载模型。与 ensureModelLoaded 互斥（synchronized(modelLock)），
-          // 避免并发 reload 导致 JNI 状态混乱崩溃。
-          ensureModelLoadedInternal()
+        if (state is ModelDownloadState.Completed) mmprojDone = true
+      }
+      if (!mmprojDone) return@launch
+
+      // ═══════════════ ② 下载主模型 ═══════════════
+      var modelDone = false
+      modelInstaller.downloadModelFileOnly().collect { state ->
+        _downloadState.value = state
+        if (state is ModelDownloadState.Completed) modelDone = true
+      }
+      if (!modelDone) return@launch
+
+      // ═══════════════ ③ 一次性加载主模型 + mmproj（与 06:22 逻辑一致）═══════════════
+      if (modelLoaderInitializing.compareAndSet(false, true)) {
+        try {
+          val modelPath = modelInstaller.getModelPath().absolutePath
+          val mmprojPath = modelInstaller.getMmprojPath().absolutePath
+          Log.i("NodeRuntime", "Loading engine with model + mmproj...")
+          withContext(Dispatchers.IO) {
+            modelLoader.reload(modelPath, mmprojPath)
+          }
+          modelLoaderInitialized.set(true)
+          _downloadState.value = ModelDownloadState.Completed
+          Log.i("NodeRuntime", "Engine ready: model + mmproj loaded")
+        } catch (e: Exception) {
+          Log.e("NodeRuntime", "Engine init crashed", e)
+          _downloadState.value = ModelDownloadState.Failed("模型加载崩溃：${e.message}")
+        } finally {
+          modelLoaderInitializing.set(false)
         }
       }
     }
@@ -110,51 +139,45 @@ class NodeRuntime(
    * 卸载后下次推理会自动重新加载。
    */
   fun unloadModel() {
-    synchronized(modelLock) {
-      modelLoader.unload()
-      modelLoaderInitialized = false
-    }
+    modelLoader.unload()
+    modelLoaderInitialized.set(false)
   }
 
   /**
    * 在后台线程触发模型加载（JNI init）。
-   *
-   * 关键守卫：
-   * 1. 下载中（Downloading）跳过 — isModelFileExists 只检查文件存在 + length>0，
-   *    下载中文件部分写入时会误判为 true，加载不完整 GGUF 会触发 JNI SIGSEGV。
-   * 2. 已初始化跳过 — 避免重复 reload。
-   * 3. 与 startModelDownload 的 reload 互斥（synchronized(modelLock)）— 避免并发
-   *    JNI init 导致状态混乱崩溃。
-   *
+   * 若模型已加载或路径为空则跳过；加载失败由 doInitialize 内部 catch 记录。
    * 必须在非主线程调用（JNI 模型加载耗时数秒）。
+   *
+   * C-N5 修复：用 AtomicBoolean CAS 确保只有一个线程能触发 init。
+   * 如果 startModelDownload 协程正在初始化，则直接返回（它完成后会设置 initialized 标志）。
    */
-  fun ensureModelLoaded() {
-    ensureModelLoadedInternal()
-  }
-
-  private fun ensureModelLoadedInternal() {
-    synchronized(modelLock) {
-      if (modelLoaderInitialized) return
-      // 下载中不加载：文件可能部分写入，isModelFileExists 会误判
-      if (_downloadState.value is ModelDownloadState.Downloading) {
-        Log.i("NodeRuntime", "Model still downloading, skip init")
-        return
-      }
-      val path = modelInstaller.getModelPath().absolutePath.takeIf { modelInstaller.isModelFileExists() }
-      if (path == null) {
-        Log.i("NodeRuntime", "Model not downloaded yet, skip init")
-        return
-      }
+  suspend fun ensureModelLoaded() {
+    if (modelLoaderInitialized.get()) return
+    if (modelLoaderInitializing.get()) return
+    val path = modelInstaller.getModelPath().absolutePath.takeIf { modelInstaller.isModelFileExists() }
+    if (path == null) {
+      Log.i("NodeRuntime", "Model not downloaded yet, skip init")
+      return
+    }
+    if (!modelLoaderInitializing.compareAndSet(false, true)) return
+    try {
+      if (modelLoaderInitialized.get()) return
       val mmproj = modelInstaller.getMmprojPath().absolutePath
       Log.i("NodeRuntime", "Background model init: $path")
-      modelLoader.reload(path, mmproj)
-      modelLoaderInitialized = true
+      withContext(Dispatchers.IO) {
+        modelLoader.reload(path, mmproj)
+      }
+      modelLoaderInitialized.set(true)
+      Log.i("NodeRuntime", "Background model init complete")
+    } catch (e: Exception) {
+      Log.e("NodeRuntime", "Background model init failed", e)
+    } finally {
+      modelLoaderInitializing.set(false)
     }
   }
 
   val isModelReady: Boolean
-    get() = _downloadState.value is ModelDownloadState.Completed ||
-      modelInstaller.isModelFileExists()
+    get() = modelInstaller.isModelFileExists()
 
   // --- UI 状态 ---
 

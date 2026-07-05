@@ -13,6 +13,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
+import java.util.concurrent.atomic.AtomicBoolean
+
 /**
  * 本地模型加载器 — 使用 llama.cpp 真实推理，模型必须下载完成后才能使用。
  *
@@ -35,6 +37,14 @@ class LocalModelLoader(
 
   private val engine = LlamaEngine(context)
   @Volatile private var initialized = false
+
+  // C-N5 修复：防止并发 doInitialize() → engine.init() 导致 safeClose() 释放另一个线程刚加载的 JNI 资源。
+  private val initializing = AtomicBoolean(false)
+
+  /** 调试开关：强制 CPU 模式，排查 GPU/NPU 崩溃。设置后需重新调用 init()。 */
+  var forceCpuOnly: Boolean
+    get() = engine.forceCpuOnly
+    set(value) { engine.forceCpuOnly = value }
 
   /**
    * 初始化引擎。modelPath 为 null 时跳过，等待下载完成后 reload。
@@ -60,7 +70,15 @@ class LocalModelLoader(
   }
 
   private fun doInitialize(path: String, mmproj: String?) {
+    if (!initializing.compareAndSet(false, true)) {
+      Log.i(TAG, "doInitialize already in progress on another thread, skipping")
+      return
+    }
     try {
+      if (initialized) {
+        Log.i(TAG, "Engine already initialized, skipping")
+        return
+      }
       if (!engine.init(path, mmproj)) {
         Log.e(TAG, "Engine init failed")
         return
@@ -72,6 +90,8 @@ class LocalModelLoader(
     } catch (e: Exception) {
       Log.e(TAG, "Engine init failed: ${e.message}")
       initialized = false
+    } finally {
+      initializing.set(false)
     }
   }
 
