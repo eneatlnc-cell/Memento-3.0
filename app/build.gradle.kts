@@ -13,6 +13,7 @@ plugins {
 android {
   namespace = "com.myagent.app"
   compileSdk = 37
+  ndkVersion = "27.0.12077973"
 
   defaultConfig {
     applicationId = "com.myagent.app"

@@ -66,11 +66,11 @@ class ModelInstaller(
     /** 主模型 OSS 原始地址（私有 bucket，匿名访问 403，仅作为 fallback；
      *  正式下载通过 PresignUrlProvider 从 FC 获取预签名 URL） */
     @Volatile var MODEL_DOWNLOAD_URL: String =
-      "https://kuak-07212785f2098850d6d71f5b7cb928f51a-opapalias.oss-cn-hangzhou.aliyuncs.com/Qwen3.5-0.8B-Q4_K_M.gguf"
+      "https://mmnto.oss-cn-hangzhou.aliyuncs.com/Qwen3.5-0.8B-Q4_K_M.gguf"
 
     /** mmproj OSS 原始地址（私有 bucket，同上） */
     @Volatile var MMPROJ_DOWNLOAD_URL: String =
-      "https://kuak-07212785f2098850d6d71f5b7cb928f51a-opapalias.oss-cn-hangzhou.aliyuncs.com/mmproj-BF16.gguf"
+      "https://mmnto.oss-cn-hangzhou.aliyuncs.com/mmproj-BF16.gguf"
 
     /** 函数计算预签名 URL 端点（FC 持有 AccessKey，生成临时签名 URL 返回客户端）。
      *  调用方式：GET {endpoint}?file=<文件名> → {"url":"..."} */

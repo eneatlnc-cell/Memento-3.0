@@ -28,6 +28,10 @@ import javax.crypto.spec.SecretKeySpec
  *   Authorization = "ACS3-HMAC-SHA256 Credential=" + AccessKeyId
  *                 + ",SignedHeaders=" + SignedHeaders
  *                 + ",Signature=" + Signature
+ *
+ * CanonicalHeaders 过滤规则（ACS3 规范）：
+ *   只保留 x-acs-* 前缀、host、content-type 的 header。
+ *   Date 等非 ACS3 header 不参与签名。
  */
 object Acs3Signer {
 
@@ -36,7 +40,8 @@ object Acs3Signer {
    *
    * @param method HTTP 方法（GET/POST，大写）
    * @param url 完整 URL（含 host、path、query）
-   * @param headers 请求头（会原地补充 host、x-acs-date；返回的 Authorization 需调用方自行写入）
+   * @param headers 请求头（会原地补充 host、x-acs-date、x-acs-content-sha256；
+   *                返回的 Authorization 需调用方自行写入）
    * @param accessKeyId 阿里云 AccessKey ID
    * @param accessKeySecret 阿里云 AccessKey Secret
    * @param payload 请求体（GET 传空字符串）
@@ -62,6 +67,9 @@ object Acs3Signer {
         .withZone(java.time.ZoneOffset.UTC)
         .format(java.time.Instant.now())
     }
+    // x-acs-content-sha256（必选，值为请求体的 SHA256 十六进制）
+    val hashedPayload = sha256Hex(payload)
+    headers["x-acs-content-sha256"] = hashedPayload
 
     // ── 2. CanonicalURI ──
     val canonicalUri = parsed.path.ifEmpty { "/" }
@@ -70,17 +78,19 @@ object Acs3Signer {
     val canonicalQuery = buildCanonicalQuery(parsed.query)
 
     // ── 4. CanonicalHeaders + SignedHeaders ──
-    // 参与签名的 header：全部已设置的 header（host、x-acs-date、x-acs-security-token 等）
-    val sortedHeaders = headers.keys.map { it.lowercase() to it }.sortedBy { it.first }
+    // ACS3 规范：只签名 x-acs-*、host、content-type 这些 header。
+    // Date 等 header 不参与 ACS3 签名计算。
+    val acsHeaders = headers.filterKeys { key ->
+      val lower = key.lowercase()
+      lower.startsWith("x-acs-") || lower == "host" || lower == "content-type"
+    }
+    val sortedHeaders = acsHeaders.keys.map { it.lowercase() to it }.sortedBy { it.first }
     val canonicalHeaders = sortedHeaders.joinToString("") { (lower, orig) ->
-      "$lower:${headers[orig]?.trim()}\n"
+      "$lower:${acsHeaders[orig]?.trim()}\n"
     }
     val signedHeaders = sortedHeaders.joinToString(";") { it.first }
 
-    // ── 5. HashedRequestPayload ──
-    val hashedPayload = sha256Hex(payload)
-
-    // ── 6. CanonicalRequest ──
+    // ── 5. CanonicalRequest ──
     val canonicalRequest = buildString {
       append(method.uppercase()).append("\n")
       append(canonicalUri).append("\n")
@@ -90,13 +100,13 @@ object Acs3Signer {
       append(hashedPayload)
     }
 
-    // ── 7. StringToSign ──
+    // ── 6. StringToSign ──
     val stringToSign = "ACS3-HMAC-SHA256\n" + sha256Hex(canonicalRequest)
 
-    // ── 8. Signature ──
+    // ── 7. Signature ──
     val signature = hmacSha256Hex(accessKeySecret, stringToSign)
 
-    // ── 9. Authorization ──
+    // ── 8. Authorization ──
     return "ACS3-HMAC-SHA256 Credential=$accessKeyId" +
       ",SignedHeaders=$signedHeaders" +
       ",Signature=$signature"
