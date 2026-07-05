@@ -53,6 +53,10 @@ class NodeRuntime(
   // 标记是否已对 modelLoader 执行过 init/reload，避免重复加载
   @Volatile private var modelLoaderInitialized = false
 
+  // 模型加载互斥锁 — 保护 modelLoader.reload/unload 与 modelLoaderInitialized 标志，
+  // 防止 startModelDownload 完成后的 reload 与 ensureModelLoaded 并发执行导致 JNI 状态混乱
+  private val modelLock = Any()
+
   // 聊天控制器
   val chatController = ChatController(scope, modelLoader, memoryManager, app.cacheDir, app.contentResolver, app)
 
@@ -86,10 +90,9 @@ class NodeRuntime(
       modelInstaller.downloadModelWithRetry().collect { state ->
         _downloadState.value = state
         if (state is ModelDownloadState.Completed && modelInstaller.isModelReady()) {
-          val modelPath = modelInstaller.getModelPath().absolutePath
-          val mmprojPath = modelInstaller.getMmprojPath().absolutePath
-          modelLoader.reload(modelPath, mmprojPath)
-          modelLoaderInitialized = true
+          // 下载完成后加载模型。与 ensureModelLoaded 互斥（synchronized(modelLock)），
+          // 避免并发 reload 导致 JNI 状态混乱崩溃。
+          ensureModelLoadedInternal()
         }
       }
     }
@@ -107,26 +110,46 @@ class NodeRuntime(
    * 卸载后下次推理会自动重新加载。
    */
   fun unloadModel() {
-    modelLoader.unload()
-    modelLoaderInitialized = false
+    synchronized(modelLock) {
+      modelLoader.unload()
+      modelLoaderInitialized = false
+    }
   }
 
   /**
    * 在后台线程触发模型加载（JNI init）。
-   * 若模型已加载或路径为空则跳过；加载失败由 doInitialize 内部 catch 记录。
+   *
+   * 关键守卫：
+   * 1. 下载中（Downloading）跳过 — isModelFileExists 只检查文件存在 + length>0，
+   *    下载中文件部分写入时会误判为 true，加载不完整 GGUF 会触发 JNI SIGSEGV。
+   * 2. 已初始化跳过 — 避免重复 reload。
+   * 3. 与 startModelDownload 的 reload 互斥（synchronized(modelLock)）— 避免并发
+   *    JNI init 导致状态混乱崩溃。
+   *
    * 必须在非主线程调用（JNI 模型加载耗时数秒）。
    */
   fun ensureModelLoaded() {
-    if (modelLoaderInitialized) return
-    val path = modelInstaller.getModelPath().absolutePath.takeIf { modelInstaller.isModelFileExists() }
-    if (path == null) {
-      Log.i("NodeRuntime", "Model not downloaded yet, skip init")
-      return
+    ensureModelLoadedInternal()
+  }
+
+  private fun ensureModelLoadedInternal() {
+    synchronized(modelLock) {
+      if (modelLoaderInitialized) return
+      // 下载中不加载：文件可能部分写入，isModelFileExists 会误判
+      if (_downloadState.value is ModelDownloadState.Downloading) {
+        Log.i("NodeRuntime", "Model still downloading, skip init")
+        return
+      }
+      val path = modelInstaller.getModelPath().absolutePath.takeIf { modelInstaller.isModelFileExists() }
+      if (path == null) {
+        Log.i("NodeRuntime", "Model not downloaded yet, skip init")
+        return
+      }
+      val mmproj = modelInstaller.getMmprojPath().absolutePath
+      Log.i("NodeRuntime", "Background model init: $path")
+      modelLoader.reload(path, mmproj)
+      modelLoaderInitialized = true
     }
-    val mmproj = modelInstaller.getMmprojPath().absolutePath
-    Log.i("NodeRuntime", "Background model init: $path")
-    modelLoader.reload(path, mmproj)
-    modelLoaderInitialized = true
   }
 
   val isModelReady: Boolean
