@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import java.io.FileWriter
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -34,7 +35,11 @@ class LlamaEngine(private val context: Context) {
     private const val TAG = "LlamaEngine"
     private const val MMPROJ_MARKER = "<__media__>"  // mtmd 默认占位符
     private const val CLOSE_WAIT_MS = 3000L  // close() 等待推理退出的最长时间
+    private const val CRASH_LOG_DIR = "logs"
+    private const val CRASH_LOG_FILE = "llama_crash.log"
   }
+
+  private val appContext: Context = context.applicationContext
 
   @Volatile private var model: Long = 0L
   @Volatile private var ctx: Long = 0L
@@ -60,7 +65,7 @@ class LlamaEngine(private val context: Context) {
    * 调试开关：强制 CPU 模式（n_gpu_layers=0），用于排查 GPU/NPU 崩溃。
    * 设为 true 后需重新调用 init() 生效。
    */
-  @Volatile var forceCpuOnly: Boolean = false
+  @Volatile var forceCpuOnly: Boolean = true
 
   /**
    * 初始化引擎并加载模型。
@@ -75,76 +80,164 @@ class LlamaEngine(private val context: Context) {
    */
   fun init(modelPath: String, mmprojPath: String? = null, maxTokens: Int = 512): Boolean {
     // C-N5 修复：防止并发 init() 调用。
-    // 如果另一个线程正在 init() 中，直接返回 false（上层 LocalModelLoader.doInitialize
-    // 已有 CAS 保护，这里是最后一道防线）。
     if (!initializing.compareAndSet(false, true)) {
       Log.w(TAG, "init() already in progress on another thread, skipping")
       return false
     }
+
+    // ── 第一步：创建诊断日志文件（纯 Kotlin FileWriter，不依赖 JNI） ──
+    // 必须在任何 JNI 调用之前完成，确保即使 System.loadLibrary 崩溃也有日志。
+    val externalDir = appContext.getExternalFilesDir(null)
+    val logDir = if (externalDir != null) {
+      java.io.File(externalDir, CRASH_LOG_DIR)
+    } else {
+      java.io.File(appContext.filesDir, CRASH_LOG_DIR)
+    }
+    logDir.mkdirs()
+    val logFile = java.io.File(logDir, CRASH_LOG_FILE)
+    val logWriter = try {
+      java.io.FileWriter(logFile, true).also { w ->
+        w.write("[${java.util.Date()}] === engine.init() called ===\n")
+        w.write("[${java.util.Date()}] modelPath=$modelPath\n")
+        w.write("[${java.util.Date()}] mmprojPath=${mmprojPath ?: "null"}\n")
+        w.flush()
+      }
+    } catch (e: Exception) {
+      Log.e(TAG, "Cannot create log file: ${e.message}")
+      null
+    }
+
+    fun logToFile(msg: String) {
+      try {
+        logWriter?.write("[${java.util.Date()}] $msg\n")
+        logWriter?.flush()
+      } catch (_: Exception) {}
+    }
+
     try {
       // 安全关闭旧引擎（等待推理退出），再初始化新的
+      logToFile("calling safeClose()...")
       safeClose()
+      logToFile("safeClose() done")
 
       return synchronized(this) {
         try {
-          LlamaNative.ensureLoaded()
-          LlamaNative.backendInit()
-
-          val caps = DeviceCapability.detect(context)
-          val useHtp = caps.canUseNpu && !forceCpuOnly
-          val nGpuLayers = if (useHtp) 99 else 0
-
-          activeBackend = if (forceCpuOnly) "CPU-4threads (forced)" 
-            else if (useHtp) "Hexagon-NPU+OpenCL" 
-            else "CPU-4threads"
-
-          Log.i(TAG, "init: modelLoad START — path=$modelPath, nGpuLayers=$nGpuLayers, useHtp=$useHtp, forceCpuOnly=$forceCpuOnly")
-          // 1) 加载模型
-          model = LlamaNative.modelLoad(modelPath, nGpuLayers, useHtp)
-          if (model == 0L) {
-            Log.e(TAG, "Model load failed: $modelPath")
+          // ── 第二步：加载 native 库 ──
+          logToFile("calling LlamaNative.ensureLoaded()...")
+          try {
+            LlamaNative.ensureLoaded()
+            logToFile("ensureLoaded() OK")
+          } catch (e: Throwable) {
+            logToFile("ensureLoaded() FAILED: ${e.javaClass.name} — ${e.message}")
+            Log.e(TAG, "ensureLoaded failed: ${e.message}", e)
             activeBackend = "failed"
             return@synchronized false
           }
-          Log.i(TAG, "init: modelLoad OK, now contextInit...")
+
+          // ── 第三步：初始化 JNI 日志 + llama backend ──
+          logToFile("calling LlamaNative.initLogFile(${logFile.absolutePath})")
+          try {
+            LlamaNative.initLogFile(logFile.absolutePath)
+            logToFile("initLogFile OK")
+          } catch (e: Throwable) {
+            logToFile("initLogFile FAILED: ${e.javaClass.name} — ${e.message}")
+          }
+
+          logToFile("calling LlamaNative.backendInit()")
+          try {
+            LlamaNative.backendInit()
+            logToFile("backendInit OK")
+          } catch (e: Throwable) {
+            logToFile("backendInit FAILED: ${e.javaClass.name} — ${e.message}")
+            Log.e(TAG, "backendInit failed: ${e.message}", e)
+            activeBackend = "failed"
+            return@synchronized false
+          }
+
+          val caps = DeviceCapability.detect(context)
+
+          // ── 按需加速策略（不启用不使用） ──
+          // 主模型（文本推理）：永远 CPU-only。0.8B 模型在 4 核 ARM 上
+          // 可达 15-20 token/s，GPU/NPU 的额外加速不明显（<2x），
+          // 但 GPU 持续运行会导致手机严重发热。
+          // mmproj（图像编码）：骁龙 8 NPU 设备上启用 GPU 加速。
+          // 图像编码是一次性短时操作（0.5-2s），编码完成后 GPU 闲置，
+          // 不会持续加热。非骁龙 8 设备用 CPU 编码。
+          val mtmdUseGpu = caps.canUseNpu  // mmproj：按需启用
+
+          activeBackend = when {
+            forceCpuOnly -> "CPU-4threads (forced)"
+            mtmdUseGpu  -> "CPU-4threads + NPU(mmproj)"
+            caps.isSd8  -> "CPU-4threads (SD8)"
+            else        -> "CPU-4threads"
+          }
+
+          logToFile("modelLoad START: $modelPath (cpu-only, mtmdUseGpu=$mtmdUseGpu)")
+
+          // 0) 文件完整性检查
+          val modelFile = java.io.File(modelPath)
+          if (!modelFile.canRead()) {
+            logToFile("Model file not readable: $modelPath")
+            activeBackend = "failed"
+            return@synchronized false
+          }
+          logToFile("Model file readable: ${modelFile.length()} bytes")
+
+          // 1) 加载模型（CPU-only）
+          logToFile(">>> about to call LlamaNative.modelLoad()")
+          model = LlamaNative.modelLoad(modelPath, nGpuLayers = 0, useHtp = false)
+          if (model == 0L) {
+            logToFile("<<< modelLoad FAILED — returned 0")
+            activeBackend = "failed"
+            return@synchronized false
+          }
+          logToFile("<<< modelLoad OK — model pointer: $model")
 
           // 2) 创建上下文
-          // KV Cache 根据 RAM 动态调整
           val nCtx = when {
-            caps.totalRamGb >= 12 -> 4096
+            caps.totalRamGb >= 12 -> 2048
             caps.totalRamGb >= 8 -> 2048
             else -> 1024
           }
-          ctx = LlamaNative.contextInit(model, nCtx, nThreads = 4, nBatch = 512)
+          logToFile(">>> about to call LlamaNative.contextInit(nCtx=$nCtx)")
+          ctx = LlamaNative.contextInit(model, nCtx, nThreads = 4, nBatch = 256)
           if (ctx == 0L) {
-            Log.e(TAG, "Context init failed")
+            logToFile("<<< contextInit FAILED — returned 0")
             activeBackend = "failed"
             closeInternal()
             return@synchronized false
           }
+          logToFile("<<< contextInit OK — ctx pointer: $ctx")
 
           // 3) 加载 mmproj（多模态）
           if (mmprojPath != null) {
-            mctx = LlamaNative.mtmdInit(model, mmprojPath)
+            logToFile(">>> about to call LlamaNative.mtmdInit($mmprojPath, useGpu=$mtmdUseGpu)")
+            mctx = LlamaNative.mtmdInit(model, mmprojPath, mtmdUseGpu)
             if (mctx == 0L) {
+              logToFile("<<< mtmdInit FAILED — returned 0, falling back to text-only")
               Log.w(TAG, "mmproj load failed, falling back to text-only: $mmprojPath")
-              // 不 return false——纯文本仍可用
+            } else {
+              logToFile("<<< mtmdInit OK — mctx pointer: $mctx")
             }
           }
 
+          logToFile("=== LlamaEngine init complete: $activeBackend, nCtx=$nCtx ===")
           Log.i(TAG, "LlamaEngine ready: $modelPath ($activeBackend, nCtx=$nCtx, mmproj=${mmprojPath != null})")
           return@synchronized true
         } catch (e: UnsatisfiedLinkError) {
+          logToFile("UnsatisfiedLinkError: ${e.message}")
           Log.e(TAG, "Native lib not loaded: ${e.message}", e)
           activeBackend = "no-native-lib"
           return@synchronized false
         } catch (e: Exception) {
+          logToFile("Exception: ${e.javaClass.name} — ${e.message}")
           Log.e(TAG, "Init failed: ${e.message}", e)
           activeBackend = "error"
           return@synchronized false
         }
       }
     } finally {
+      try { logWriter?.close() } catch (_: Exception) {}
       initializing.set(false)
     }
   }
@@ -370,7 +463,8 @@ class LlamaEngine(private val context: Context) {
     }
 
     // 1. 信号中断正在运行的推理
-    try { LlamaNative.cancelCompletion() } catch (_: Exception) {}
+    // catch Throwable 而不是 Exception：native 库缺失时 UnsatifiedLinkError 属于 Error 体系
+    try { LlamaNative.cancelCompletion() } catch (_: Throwable) {}
 
     // 2. 等待推理退出（JNI 在每个 token 迭代检查取消标志）
     val deadline = System.currentTimeMillis() + CLOSE_WAIT_MS

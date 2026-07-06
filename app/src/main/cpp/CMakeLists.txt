@@ -15,6 +15,13 @@ add_library(llama SHARED IMPORTED)
 set_target_properties(llama PROPERTIES
     IMPORTED_LOCATION ${JNILIB_DIR}/libllama.so)
 
+# ── OpenCL proxy：dlopen/dlsym 动态代理真实 OpenCL 库 ──
+# 构造时 dlopen("libOpenCL.so")，每个导出函数通过 dlsym 查找真实实现。
+# 找到 → 委托调用；未找到 → 返回安全 fallback。
+# 在 System.loadLibrary("llama") 之前加载此库，提供全部 28 个 OpenCL 符号。
+add_library(opencl_stub SHARED opencl_stub.c)
+target_link_libraries(opencl_stub ${log-lib} dl)
+
 # ── 编译我们自己的 JNI wrapper ──
 add_library(llama_jni SHARED llama_jni.cpp)
 

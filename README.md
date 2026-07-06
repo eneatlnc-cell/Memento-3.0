@@ -72,7 +72,7 @@ pnpm android:screenshots
 To make screenshot capture own emulator startup, pass a named AVD:
 
 ```bash
-ANDROID_SCREENSHOT_AVD=OpenClaw_QA_API35 pnpm android:screenshots
+ANDROID_SCREENSHOT_AVD=Memento_QA_API35 pnpm android:screenshots
 ```
 
 The screenshot script uses one connected ADB device when available. If none is
@@ -82,8 +82,8 @@ the screenshots, then shuts down the emulator it started.
 
 `pnpm android:release:archive` builds signed release artifacts into `apps/android/build/release-artifacts/` and writes `.sha256` checksum files:
 
-- Play build: `openclaw-<version>-play-release.aab`
-- Third-party build: `openclaw-<version>-third-party-release.apk`
+- Play build: `memento-<version>-play-release.aab`
+- Third-party build: `memento-<version>-third-party-release.apk`
 
 `pnpm android:bundle:release` is an alias for the same Fastlane archive lane.
 
@@ -181,7 +181,7 @@ Use `adb reverse` so Android `localhost:18789` tunnels to your laptop `localhost
 Terminal A (gateway):
 
 ```bash
-pnpm openclaw gateway --port 18789 --verbose
+pnpm memento gateway --port 18789 --verbose
 ```
 
 Terminal B (USB tunnel):
@@ -203,14 +203,14 @@ This app is native Kotlin + Jetpack Compose.
 - For Compose UI edits: use Android Studio **Live Edit** on a debug build (works on physical devices; project `minSdk=31` already meets API requirement).
 - For many non-structural code/resource changes: use Android Studio **Apply Changes**.
 - For structural/native/manifest/Gradle changes: do full reinstall (`pnpm android:run`).
-- Canvas web content already supports live reload when loaded from Gateway `__openclaw__/canvas/` (see `docs/platforms/android.md`).
+- Canvas web content already supports live reload when loaded from Gateway `__memento__/canvas/` (see `docs/platforms/android.md`).
 
 ## Connect / Pair
 
 1) Start the gateway (on your main machine):
 
 ```bash
-pnpm openclaw gateway --port 18789 --verbose
+pnpm memento gateway --port 18789 --verbose
 ```
 
 2) In the Android app:
@@ -221,8 +221,8 @@ pnpm openclaw gateway --port 18789 --verbose
 3) Approve pairing (on the gateway machine):
 
 ```bash
-openclaw devices list
-openclaw devices approve <requestId>
+memento devices list
+memento devices approve <requestId>
 ```
 
 More details: `docs/platforms/android.md`.
@@ -252,7 +252,7 @@ Why these matter:
 - The Play build removes these behind the `play` flavor.
 - Photo library access is also removed from the Play build. Use third-party builds for `photos.latest`.
 
-Current OpenClaw Android implication:
+Current Memento Android implication:
 
 - APK / sideload build can keep SMS, Call Log, and recent-photo features.
 - Google Play build excludes SMS send/search, Call Log search, and recent-photo access unless the product is intentionally positioned and approved under the relevant policy exception.
@@ -288,19 +288,19 @@ This suite assumes setup is already done manually. It does **not** install/run/p
 Pre-req checklist:
 
 1) Gateway is running and reachable from the Android app.
-2) Android app is connected to that gateway and `openclaw nodes status` shows it as paired + connected.
+2) Android app is connected to that gateway and `memento nodes status` shows it as paired + connected.
 3) App stays unlocked and in foreground for the whole run.
 4) Open the app **Screen** tab and keep it active during the run (canvas/A2UI commands require the canvas WebView attached there).
 5) Grant runtime permissions for capabilities you expect to pass (camera/mic/location/notification listener/location, etc.).
 6) No interactive system dialogs should be pending before test start.
-7) Canvas host is enabled and reachable from the device for remote Canvas checks (do not run gateway with `OPENCLAW_SKIP_CANVAS_HOST=1`; startup logs should include `canvas host mounted at .../__openclaw__/`).
+7) Canvas host is enabled and reachable from the device for remote Canvas checks (do not run gateway with `MEMENTO_SKIP_CANVAS_HOST=1`; startup logs should include `canvas host mounted at .../__memento__/`).
 8) Local operator test client pairing is approved. If first run fails with `pairing required`, preview the latest pending request, approve the printed request ID, then rerun:
 9) For A2UI checks, keep the app on **Screen** tab; the node uses its bundled app-owned A2UI page for message application.
 
 ```bash
-openclaw devices list
-openclaw devices approve --latest   # preview only; copy the requestId from output
-openclaw devices approve <requestId>
+memento devices list
+memento devices approve --latest   # preview only; copy the requestId from output
+memento devices approve <requestId>
 ```
 
 Run:
@@ -311,10 +311,10 @@ pnpm android:test:integration
 
 Optional overrides:
 
-- `OPENCLAW_ANDROID_GATEWAY_URL=ws://...` (default: from your local OpenClaw config)
-- `OPENCLAW_ANDROID_GATEWAY_TOKEN=...`
-- `OPENCLAW_ANDROID_GATEWAY_PASSWORD=...`
-- `OPENCLAW_ANDROID_NODE_ID=...` or `OPENCLAW_ANDROID_NODE_NAME=...`
+- `MEMENTO_ANDROID_GATEWAY_URL=ws://...` (default: from your local Memento config)
+- `MEMENTO_ANDROID_GATEWAY_TOKEN=...`
+- `MEMENTO_ANDROID_GATEWAY_PASSWORD=...`
+- `MEMENTO_ANDROID_NODE_ID=...` or `MEMENTO_ANDROID_NODE_NAME=...`
 
 What it does:
 
@@ -326,7 +326,7 @@ What it does:
 Common failure quick-fixes:
 
 - `pairing required` before tests start:
-  - list pending requests (`openclaw devices list`), then approve with the exact ID (`openclaw devices approve <requestId>`) and rerun.
+  - list pending requests (`memento devices list`), then approve with the exact ID (`memento devices approve <requestId>`) and rerun.
 - `A2UI host not reachable` / `A2UI_HOST_UNAVAILABLE`:
   - keep the app foregrounded on the **Screen** tab and rerun. A2UI commands use the bundled app-owned A2UI page; the Gateway Canvas host is still needed for remote Canvas checks, but not for A2UI message application.
 - `NODE_BACKGROUND_UNAVAILABLE: canvas unavailable`:

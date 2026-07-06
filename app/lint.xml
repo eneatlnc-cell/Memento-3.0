@@ -5,7 +5,7 @@
     <issue id="IconLauncherShape" severity="ignore" />
     <issue id="NewerVersionAvailable" severity="ignore" />
 
-    <!-- OpenClaw uses date-based version codes (yyyyMMddNN), which are high but still below the Android max. -->
+    <!-- Memento uses date-based version codes (yyyyMMddNN), which are high but still below the Android max. -->
     <issue id="HighAppVersionCode" severity="ignore" />
 
     <!-- Target SDK follows the current release train; bump only after platform compatibility testing. -->

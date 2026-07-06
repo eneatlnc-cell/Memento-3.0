@@ -83,7 +83,7 @@ function releaseArtifacts(versionName: string): ReleaseArtifact[] {
         "apk",
         "thirdParty",
         "release",
-        `openclaw-${versionName}-thirdParty-release.apk`,
+        `memento-${versionName}-thirdParty-release.apk`,
       ),
     },
   ];
@@ -194,7 +194,7 @@ async function main() {
   for (const artifact of artifacts) {
     const outputPath = join(
       releaseOutputDir,
-      `openclaw-${version.canonicalVersion}-${artifact.flavorName}-release.${artifact.kind}`,
+      `memento-${version.canonicalVersion}-${artifact.flavorName}-release.${artifact.kind}`,
     );
 
     await copyArtifact(artifact.sourcePath, outputPath);

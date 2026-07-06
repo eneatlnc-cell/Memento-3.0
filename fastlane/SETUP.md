@@ -1,4 +1,4 @@
-# fastlane setup (OpenClaw Android)
+# fastlane setup (Memento Android)
 
 Install:
 
@@ -6,7 +6,7 @@ Install:
 brew install fastlane
 ```
 
-Create a Google Play service account JSON key with Google Play Developer API access, then grant that service account access to the OpenClaw app in Play Console.
+Create a Google Play service account JSON key with Google Play Developer API access, then grant that service account access to the Memento app in Play Console.
 
 Recommended local auth:
 
@@ -17,7 +17,7 @@ GOOGLE_PLAY_JSON_KEY=/absolute/path/to/google-play-service-account.json
 Optional app targeting:
 
 ```bash
-GOOGLE_PLAY_PACKAGE_NAME=ai.openclaw.app
+GOOGLE_PLAY_PACKAGE_NAME=com.myagent.app
 ```
 
 Android release signing uses the same private `apps-signing` repository and `MATCH_PASSWORD` secret as iOS, but with Android-specific encrypted assets. Pull the shared upload key before release validation:
@@ -34,17 +34,17 @@ For the first setup or rotation, provide the Play upload keystore and a local si
 
 ```bash
 MATCH_PASSWORD=<signing repo password> \
-OPENCLAW_ANDROID_UPLOAD_KEYSTORE=<path-to-upload-keystore.jks> \
-OPENCLAW_ANDROID_SIGNING_PROPERTIES=<path-to-android-signing.properties> \
+MEMENTO_ANDROID_UPLOAD_KEYSTORE=<path-to-upload-keystore.jks> \
+MEMENTO_ANDROID_SIGNING_PROPERTIES=<path-to-android-signing.properties> \
 pnpm android:release:signing:sync:push
 ```
 
 The source signing properties file must contain:
 
 ```properties
-OPENCLAW_ANDROID_STORE_PASSWORD=<store-password>
-OPENCLAW_ANDROID_KEY_ALIAS=<upload-key-alias>
-OPENCLAW_ANDROID_KEY_PASSWORD=<key-password>
+MEMENTO_ANDROID_STORE_PASSWORD=<store-password>
+MEMENTO_ANDROID_KEY_ALIAS=<upload-key-alias>
+MEMENTO_ANDROID_KEY_PASSWORD=<key-password>
 ```
 
 Store the Google Play upload key, not the irreplaceable app signing key, when Play App Signing is enabled.
@@ -65,7 +65,7 @@ pnpm android:release:archive
 Generate deterministic Google Play screenshots:
 
 ```bash
-ANDROID_SCREENSHOT_AVD=OpenClaw_QA_API35 pnpm android:screenshots
+ANDROID_SCREENSHOT_AVD=Memento_QA_API35 pnpm android:screenshots
 ```
 
 If exactly one ADB device is already connected, `pnpm android:screenshots`

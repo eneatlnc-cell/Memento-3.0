@@ -8,24 +8,51 @@ import java.io.BufferedReader
 import java.io.FileReader
 
 /**
- * 设备能力检测 — SOC 型号 + 内存容量。
+ * 设备能力检测 — SOC 型号 + 芯片平台分级 + 内存容量。
  *
- * 用于决定 llama.cpp 推理引擎后端选择：
- * - 骁龙 8 系列 + ≥12GB RAM → Hexagon NPU + Adreno OpenCL 加速（n_gpu_layers=99）
- * - 其他平台 → CPU 多线程（n_gpu_layers=0）
+ * 芯片平台分级（决定原生库加载策略和后端选择）：
  *
- * 骁龙 8 系列检测逻辑：
- * 1. 读取 /proc/cpuinfo 中的 Hardware 字段
- * 2. 匹配 "qcom" / "Qualcomm" / "Snapdragon"
- * 3. 通过 ro.board.platform 确认平台代号
+ *  TIER_SD8_NPU  — 骁龙 8 系列（SM8450+），有 Hexagon NPU + Adreno OpenCL
+ *                   → 加载: opencl_stub + cdsprpc_stub + llama + llama_jni
+ *                   → 后端: Hexagon NPU (n_gpu_layers=99) 或 OpenCL 回退
+ *  TIER_SD8_CPU  — 骁龙 8 系列但 RAM < 12GB
+ *                   → 加载: opencl_stub + cdsprpc_stub + llama + llama_jni
+ *                   → 后端: CPU-only (n_gpu_layers=0)
+ *  TIER_SD7      — 骁龙 7 系列，有 Adreno OpenCL，无 Hexagon NPU
+ *                   → 加载: opencl_stub + cdsprpc_stub + llama + llama_jni
+ *                   → 后端: CPU-only (n_gpu_layers=0)
+ *  TIER_QCOM     — 其他高通平台（骁龙 6/4/2 系列）
+ *                   → 加载: opencl_stub + cdsprpc_stub + llama + llama_jni
+ *                   → 后端: CPU-only
+ *  TIER_OTHER    — 麒麟 / 天玑 / 三星 Exynos / 鸿蒙 / 其他
+ *                   → 加载: opencl_stub + cdsprpc_stub + llama + llama_jni
+ *                   → 后端: CPU-only（nGpuLayers=0，最保守）
+ *
+ * 所有平台都需要加载 opencl_stub + cdsprpc_stub，因为 libllama.so
+ * 来自 llama.rn 0.12.5 预编译，硬编码了 OpenCL + Hexagon 的 DT_NEEDED。
+ * 这些 stub 在 CPU-only 模式下不会被实际调用。
  */
 object DeviceCapability {
   private const val TAG = "DeviceCapability"
 
+  /** 芯片平台分级 */
+  enum class Tier {
+    /** 骁龙 8 系列 + RAM ≥12GB → NPU 加速 */
+    SD8_NPU,
+    /** 骁龙 8 系列但 RAM 不足 → CPU-only */
+    SD8_CPU,
+    /** 骁龙 7 系列 → CPU-only */
+    SD7,
+    /** 其他高通 → CPU-only */
+    QCOM,
+    /** 麒麟 / 天玑 / Exynos / 鸿蒙 / 其他 → CPU-only */
+    OTHER,
+  }
+
   /** NPU 加速所需的最小内存（GB） */
   const val NPU_MIN_RAM_GB = 12
 
-  /** 骁龙 8 系列平台代号前缀 */
+  /** 骁龙 8 系列平台代号（SM8450+） */
   private val SD8_PLATFORMS = setOf(
     "lahaina",   // SD888 / SD8 Gen1
     "taro",      // SD8 Gen1
@@ -39,15 +66,28 @@ object DeviceCapability {
     "anjo",      // SD8s Gen3 (alternate)
   )
 
-  /** 骁龙 8 系列 Hardware 字段关键词 */
-  private val SD8_HARDWARE_KEYWORDS = listOf(
+  /** 骁龙 7 系列平台代号 */
+  private val SD7_PLATFORMS = setOf(
+    "yupik",     // SD7 Gen1
+    "holi",      // SD780G
+    "lito",      // SD765G
+    "atoll",     // SD720G
+    "bengal",    // SD680
+    "khaje",     // SD680
+    "trinket",   // SD665
+    "sdm845",    // SD845
+  )
+
+  private val QCOM_HARDWARE_KEYWORDS = listOf(
     "qcom", "qualcomm", "snapdragon",
   )
 
   data class Info(
+    val tier: Tier,
     val isSd8: Boolean,
     val platform: String,
     val hardware: String,
+    val socManufacturer: String,
     val totalRamGb: Int,
     val canUseNpu: Boolean,
   )
@@ -62,48 +102,58 @@ object DeviceCapability {
   private fun detectInternal(context: Context): Info {
     val hardware = readCpuinfoHardware()
     val platform = readSystemProperty("ro.board.platform")
+    val socMfr = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      Build.SOC_MANUFACTURER ?: ""
+    } else ""
     val totalRamGb = getTotalRamGb(context)
 
-    val isSd8 = isSnapdragon8(platform, hardware)
-    val canUseNpu = isSd8 && totalRamGb >= NPU_MIN_RAM_GB
+    val isQcom = isQualcommPlatform(platform, hardware, socMfr)
+    val isSd8 = isQcom && isSnapdragon8Platform(platform)
+    val isSd7 = isQcom && !isSd8 && isSnapdragon7Platform(platform)
+
+    val tier = when {
+      isSd8 && totalRamGb >= NPU_MIN_RAM_GB -> Tier.SD8_NPU
+      isSd8 -> Tier.SD8_CPU
+      isSd7 -> Tier.SD7
+      isQcom -> Tier.QCOM
+      else -> Tier.OTHER
+    }
 
     val info = Info(
+      tier = tier,
       isSd8 = isSd8,
       platform = platform,
       hardware = hardware,
+      socManufacturer = socMfr,
       totalRamGb = totalRamGb,
-      canUseNpu = canUseNpu,
+      canUseNpu = tier == Tier.SD8_NPU,
     )
 
-    Log.i(TAG, "Device: platform=$platform, hardware=$hardware, " +
-      "ram=${totalRamGb}GB, sd8=$isSd8, npu=$canUseNpu")
+    Log.i(TAG, "Device: tier=$tier, platform=$platform, hardware=$hardware, " +
+      "soc=$socMfr, ram=${totalRamGb}GB, npu=${info.canUseNpu}")
 
     return info
   }
 
-  // ── 骁龙 8 检测 ──
+  // ── 芯片平台检测 ──
 
-  private fun isSnapdragon8(platform: String, hardware: String): Boolean {
-    // 平台代号匹配
-    if (platform.isNotBlank()) {
-      val normalized = platform.lowercase().trim()
-      if (normalized in SD8_PLATFORMS) return true
-      // 也支持 "msm" 前缀的骁龙 8 平台
-      if (normalized.startsWith("msm") && normalized.any { it.isDigit() }) return true
-    }
-
-    // Hardware 字段匹配
-    if (hardware.isNotBlank()) {
-      val normalized = hardware.lowercase().trim()
-      if (SD8_HARDWARE_KEYWORDS.any { normalized.contains(it) }) return true
-    }
-
-    // 制造商兜底：如果 SOC 制造商是 Qualcomm 且机型年份 >= 2022
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-      if (Build.SOC_MANUFACTURER.lowercase().contains("qualcomm")) return true
-    }
-
+  private fun isQualcommPlatform(platform: String, hardware: String, socMfr: String): Boolean {
+    if (platform.isNotBlank() && platform.lowercase().trim() in SD8_PLATFORMS + SD7_PLATFORMS) return true
+    if (hardware.isNotBlank() && QCOM_HARDWARE_KEYWORDS.any { hardware.lowercase().contains(it) }) return true
+    if (socMfr.isNotBlank() && socMfr.lowercase().contains("qualcomm")) return true
     return false
+  }
+
+  private fun isSnapdragon8Platform(platform: String): Boolean {
+    if (platform.isBlank()) return false
+    val normalized = platform.lowercase().trim()
+    return normalized in SD8_PLATFORMS
+  }
+
+  private fun isSnapdragon7Platform(platform: String): Boolean {
+    if (platform.isBlank()) return false
+    val normalized = platform.lowercase().trim()
+    return normalized in SD7_PLATFORMS
   }
 
   // ── 内存检测 ──
@@ -116,7 +166,6 @@ object DeviceCapability {
       (memInfo.totalMem / (1024 * 1024 * 1024)).toInt()
     } catch (e: Exception) {
       Log.w(TAG, "Failed to get RAM info: ${e.message}")
-      // 用 /proc/meminfo 兜底
       readMemTotalGb()
     }
   }
@@ -134,7 +183,7 @@ object DeviceCapability {
           }
         }
       }
-      8 // 保守默认
+      8
     } catch (e: Exception) {
       8
     }

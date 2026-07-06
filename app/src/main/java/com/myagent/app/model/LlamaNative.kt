@@ -9,11 +9,12 @@ import android.util.Log
  * 所有方法必须在 LlamaEngine 的 synchronized 块内调用，避免并发竞争。
  *
  * 依赖的原生库（jniLibs/arm64-v8a/）：
- * - libllama.so — 合体库（llama.cpp + ggml + mtmd + Hexagon + OpenCL 后端），
- *   来自 llama.rn 0.12.5 预编译（librnllama_v8_2_dotprod_i8mm_hexagon_opencl.so 重命名）
+ * - libopencl_stub.so — OpenCL 3.0 stub（提供 clCreateBufferWithProperties，CMake 编译）
+ * - libllama.so — 合体库（llama.cpp + ggml + mtmd），
+ *   来自 llama.rn 0.12.5 预编译。DT_NEEDED libcdsprpc.so 已剥离（空字符串替换）。
  * - libllama_jni.so — 本项目自编的 JNI wrapper
  *
- * 加载顺序：先加载 libllama.so（底层 C API），再加载 libllama_jni.so（JNI 桥接）。
+ * 加载顺序：opencl_stub → llama → llama_jni
  */
 object LlamaNative {
   private const val TAG = "LlamaNative"
@@ -25,12 +26,25 @@ object LlamaNative {
     synchronized(this) {
       if (loaded) return
       try {
-        // 先加载底层合体库（含 llama.cpp + ggml + mtmd + Hexagon + OpenCL）
+        // 0) 先加载 OpenCL stub（提供 clCreateBufferWithProperties 桩实现）
+        //    旧 GPU 驱动（OpenCL 1.2/2.0）缺少该 OpenCL 3.0 符号，
+        //    libllama.so 的 dlopen 会失败。此 stub 在 libllama.so 之前加载，
+        //    使动态链接器能解析该符号。
+        try {
+          System.loadLibrary("opencl_stub")
+          Log.i(TAG, "opencl_stub loaded (OpenCL 3.0 stub for old GPU drivers)")
+        } catch (e: UnsatisfiedLinkError) {
+          Log.w(TAG, "opencl_stub not found: ${e.message}")
+        }
+
+        // 1) 加载底层合体库（含 llama.cpp + ggml + mtmd + Hexagon + OpenCL）
+        //    DT_NEEDED libcdsprpc.so 已从 .so 中剥离（空字符串替换），
+        //    DT_NEEDED libOpenCL.so 由系统库 + opencl_stub 共同解析。
         System.loadLibrary("llama")
-        // 再加载我们的 JNI wrapper
+        // 2) 加载我们的 JNI wrapper
         System.loadLibrary("llama_jni")
         loaded = true
-        Log.i(TAG, "Native libraries loaded (libllama.so + libllama_jni.so)")
+        Log.i(TAG, "Native libraries loaded (opencl_stub + llama + llama_jni)")
       } catch (e: UnsatisfiedLinkError) {
         Log.e(TAG, "Failed to load native libraries: ${e.message}", e)
         throw e
@@ -39,6 +53,13 @@ object LlamaNative {
   }
 
   // ── backend ──
+
+  // 初始化崩溃日志文件（需在 backendInit 之前调用）
+  // path 示例：/data/data/com.myagent.app/files/logs/llama_crash.log
+  external fun initLogFile(path: String)
+
+  // 写入一行诊断日志到崩溃日志文件
+  external fun logToFile(msg: String)
 
   external fun backendInit()
   external fun backendFree()
@@ -77,7 +98,7 @@ object LlamaNative {
   // ── mtmd 多模态 ──
   // 返回 0 表示失败
 
-  external fun mtmdInit(model: Long, mmprojPath: String): Long
+  external fun mtmdInit(model: Long, mmprojPath: String, useGpu: Boolean): Long
   external fun mtmdFree(mctx: Long)
 
   // ── 多模态流式生成 ──

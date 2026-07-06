@@ -3,10 +3,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 ANDROID_DIR="$ROOT_DIR/apps/android"
-PACKAGE_NAME="ai.openclaw.app"
+PACKAGE_NAME="com.myagent.app"
 RECEIVER="$PACKAGE_NAME/.VoiceE2eReceiver"
-RUN_ACTION="ai.openclaw.app.debug.RUN_VOICE_E2E"
-OPEN_ACTION="ai.openclaw.app.debug.OPEN_VOICE_E2E"
+RUN_ACTION="com.myagent.app.debug.RUN_VOICE_E2E"
+OPEN_ACTION="com.myagent.app.debug.OPEN_VOICE_E2E"
 PORT=18789
 HOST="127.0.0.1"
 MODE="both"
@@ -96,7 +96,7 @@ export ANDROID_HOME="${ANDROID_HOME:-/opt/homebrew/share/android-commandlinetool
 export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
 export PATH="/opt/homebrew/opt/openjdk@17/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
 
-ARTIFACT_DIR="/tmp/openclaw-android-voice-e2e-$(date +%Y%m%d-%H%M%S)"
+ARTIFACT_DIR="/tmp/memento-android-voice-e2e-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$ARTIFACT_DIR"
 
 cleanup_gateway() {
@@ -116,14 +116,14 @@ adb reverse "tcp:$PORT" "tcp:$PORT" >/dev/null
 
 if [[ "$START_GATEWAY" -eq 1 ]]; then
   if command -v bws_get_secret >/dev/null 2>&1; then
-    OPENCLAW_OPENAI_API_KEY="$(bws_get_secret OPENCLAW_OPENAI_API_KEY)"
+    MEMENTO_OPENAI_API_KEY="$(bws_get_secret MEMENTO_OPENAI_API_KEY)"
   else
-    OPENCLAW_OPENAI_API_KEY="$(zsh -ic 'bws_get_secret OPENCLAW_OPENAI_API_KEY')"
+    MEMENTO_OPENAI_API_KEY="$(zsh -ic 'bws_get_secret MEMENTO_OPENAI_API_KEY')"
   fi
   (
     cd "$ROOT_DIR"
-    OPENAI_API_KEY="$OPENCLAW_OPENAI_API_KEY" \
-      pnpm openclaw gateway run \
+    OPENAI_API_KEY="$MEMENTO_OPENAI_API_KEY" \
+      pnpm memento gateway run \
         --port "$PORT" \
         --auth none \
         --bind loopback \
@@ -137,7 +137,7 @@ if [[ "$START_GATEWAY" -eq 1 ]]; then
     cat "$ARTIFACT_DIR/gateway.log" >&2
     exit 1
   fi
-  unset OPENCLAW_OPENAI_API_KEY
+  unset MEMENTO_OPENAI_API_KEY
 fi
 
 if [[ "$INSTALL" -eq 1 ]]; then
@@ -220,7 +220,7 @@ case "$MODE" in
 esac
 
 adb logcat -d -v time |
-  rg -i 'OpenClaw|TalkMode|MicCapture|AudioRecord|SpeechRecognizer|realtime|talk.session|appendAudio|transcript|Talk failed|Transcription failed|Speech network|VoiceE2E' |
+  rg -i 'Memento|TalkMode|MicCapture|AudioRecord|SpeechRecognizer|realtime|talk.session|appendAudio|transcript|Talk failed|Transcription failed|Speech network|VoiceE2E' |
   tail -250 >"$ARTIFACT_DIR/logcat.txt" || true
 
 if [[ "$CLEANUP" -eq 1 ]]; then

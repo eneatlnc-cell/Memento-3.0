@@ -42,17 +42,22 @@ class ModelInstaller(
   private val activationManager: ActivationManager? = null,
 ) {
   companion object {
-    /** 主模型文件名（Qwen3.5-0.8B Q4_K_M） — 本地存储名（小写） */
-    const val MODEL_FILE_NAME = "qwen3.5-0.8b-q4_k_m.gguf"
+    /** 主模型文件名（Qwen3.5-0.8B UD Q4_K_XL） — 本地存储名 */
+    const val MODEL_FILE_NAME = "Qwen3.5-0.8B-UD-Q4_K_XL.gguf"
 
-    /** 视觉投影器文件名（mmproj BF16） — 本地存储名 */
-    const val MMPROJ_FILE_NAME = "mmproj-BF16.gguf"
+    /** 视觉投影器文件名（mmproj Qwen3.5-0.8B bf16） — 本地存储名 */
+    const val MMPROJ_FILE_NAME = "mmproj-Qwen_Qwen3.5-0.8B-bf16.gguf"
+
+    /** 主模型最低文件大小（字节，Q4_K_XL ~500MB，留余量防误判） */
+    const val MIN_MODEL_SIZE = 300_000_000L
+
+    /** mmproj 最低文件大小（字节，bf16 ~200MB，留余量防误判） */
+    const val MIN_MMPROJ_SIZE = 100_000_000L
 
     /** OSS 上的实际对象名（大小写敏感，必须与 OSS bucket 一致）。
-     *  本地存储用小写（历史原因），OSS 用原始大小写，二者不一致，故单独定义。
      *  FC 函数直接用此名作为 OSS key，无需映射。 */
-    const val OSS_MODEL_OBJECT_NAME = "Qwen3.5-0.8B-Q4_K_M.gguf"
-    const val OSS_MMPROJ_OBJECT_NAME = "mmproj-BF16.gguf"
+    const val OSS_MODEL_OBJECT_NAME = "Qwen3.5-0.8B-UD-Q4_K_XL.gguf"
+    const val OSS_MMPROJ_OBJECT_NAME = "mmproj-Qwen_Qwen3.5-0.8B-bf16.gguf"
 
     /**
      * SHA256 校验值。
@@ -66,11 +71,11 @@ class ModelInstaller(
     /** 主模型 OSS 原始地址（私有 bucket，匿名访问 403，仅作为 fallback；
      *  正式下载通过 PresignUrlProvider 从 FC 获取预签名 URL） */
     @Volatile var MODEL_DOWNLOAD_URL: String =
-      "https://mmnto.oss-cn-hangzhou.aliyuncs.com/Qwen3.5-0.8B-Q4_K_M.gguf"
+      "https://mmnto.oss-cn-hangzhou.aliyuncs.com/Qwen3.5-0.8B-UD-Q4_K_XL.gguf"
 
     /** mmproj OSS 原始地址（私有 bucket，同上） */
     @Volatile var MMPROJ_DOWNLOAD_URL: String =
-      "https://mmnto.oss-cn-hangzhou.aliyuncs.com/mmproj-BF16.gguf"
+      "https://mmnto.oss-cn-hangzhou.aliyuncs.com/mmproj-Qwen_Qwen3.5-0.8B-bf16.gguf"
 
     /** 函数计算预签名 URL 端点（FC 持有 AccessKey，生成临时签名 URL 返回客户端）。
      *  调用方式：GET {endpoint}?file=<文件名> → {"url":"..."} */
@@ -137,24 +142,34 @@ class ModelInstaller(
 
   /**
    * 检查主模型 + mmproj 是否都已安装且校验通过。
+   * 同时校验文件大小（防止部分下载被误判为完整）。
    */
   fun isModelReady(): Boolean {
-    return isFileReady(getModelPath(), EXPECTED_MODEL_SHA256) &&
-      isFileReady(getMmprojPath(), EXPECTED_MMPROJ_SHA256)
+    return isFileReady(getModelPath(), EXPECTED_MODEL_SHA256, MIN_MODEL_SIZE) &&
+      isFileReady(getMmprojPath(), EXPECTED_MMPROJ_SHA256, MIN_MMPROJ_SIZE)
   }
 
   /**
-   * 轻量级检查：仅判断两个文件是否存在且大小 > 0。
+   * 轻量级检查：仅判断两个文件是否存在且大小达标。
+   * 注意：不保证文件完整性（SHA256 校验需要 isModelReady()）。
    */
   fun isModelFileExists(): Boolean {
     val model = getModelPath()
     val mmproj = getMmprojPath()
-    return model.exists() && model.length() > 0 &&
-      mmproj.exists() && mmproj.length() > 0
+    return model.exists() && model.length() >= MIN_MODEL_SIZE &&
+      mmproj.exists() && mmproj.length() >= MIN_MMPROJ_SIZE
   }
 
-  private fun isFileReady(file: File, expectedSha256: String?): Boolean {
-    if (!file.exists() || file.length() == 0L) return false
+  /**
+   * 检查指定文件是否存在且大小达标（用于判断部分下载）。
+   * @return true 表示文件存在且大小 >= minSize
+   */
+  fun isFileSizeValid(file: File, minSize: Long): Boolean {
+    return file.exists() && file.length() >= minSize
+  }
+
+  private fun isFileReady(file: File, expectedSha256: String?, minSize: Long = 0L): Boolean {
+    if (!file.exists() || file.length() < minSize) return false
     if (expectedSha256 == null) return true  // 未配置校验值则跳过
     return verifyChecksum(file, expectedSha256)
   }
@@ -313,8 +328,12 @@ class ModelInstaller(
     val modelFile = getModelPath()
     modelFile.parentFile?.mkdirs()
 
-    if (modelFile.exists() && modelFile.length() == 0L) modelFile.delete()
-    if (isFileReady(modelFile, EXPECTED_MODEL_SHA256)) {
+    // 删除空文件或部分下载（< MIN_MODEL_SIZE）
+    if (modelFile.exists() && modelFile.length() < MIN_MODEL_SIZE) {
+      Log.w("ModelInstaller", "Deleting partial model file: ${modelFile.length()} bytes")
+      modelFile.delete()
+    }
+    if (isFileReady(modelFile, EXPECTED_MODEL_SHA256, MIN_MODEL_SIZE)) {
       emit(ModelDownloadState.Completed)
       return@flow
     }
@@ -375,8 +394,12 @@ class ModelInstaller(
     val mmprojFile = getMmprojPath()
     mmprojFile.parentFile?.mkdirs()
 
-    if (mmprojFile.exists() && mmprojFile.length() == 0L) mmprojFile.delete()
-    if (isFileReady(mmprojFile, EXPECTED_MMPROJ_SHA256)) {
+    // 删除空文件或部分下载（< MIN_MMPROJ_SIZE）
+    if (mmprojFile.exists() && mmprojFile.length() < MIN_MMPROJ_SIZE) {
+      Log.w("ModelInstaller", "Deleting partial mmproj file: ${mmprojFile.length()} bytes")
+      mmprojFile.delete()
+    }
+    if (isFileReady(mmprojFile, EXPECTED_MMPROJ_SHA256, MIN_MMPROJ_SIZE)) {
       emit(ModelDownloadState.Completed)
       return@flow
     }

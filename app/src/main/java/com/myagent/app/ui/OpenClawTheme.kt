@@ -38,7 +38,7 @@ val LocalSkinColors = staticCompositionLocalOf<SkinColors> {
 }
 
 /**
- * Memento 统一主题 — 合并了原 OpenClawTheme + ClawDesignTheme 的职责。
+ * Memento 统一主题 — 合并了原 MementoTheme + ClawDesignTheme 的职责。
  *
  * 提供三层令牌：
  * 1. MaterialTheme (M3 ColorScheme) — 底层 Material3 控件

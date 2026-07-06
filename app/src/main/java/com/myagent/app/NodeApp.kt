@@ -7,6 +7,10 @@ import com.myagent.app.activation.ActivationManager
 import com.myagent.app.memory.MemoryManager
 import com.myagent.app.model.ModelInstaller
 import com.myagent.app.multimodal.MultiModalDispatcher
+import java.io.File
+import java.io.FileWriter
+import java.io.PrintWriter
+import java.util.Date
 
 /**
  * Android Application 单例 — 持有全局 SecurePrefs、MemoryManager、ActivationManager。
@@ -41,6 +45,30 @@ class NodeApp : Application() {
 
   override fun onCreate() {
     super.onCreate()
+
+    // ═══════════════════════════════════════════════════════════════
+    // Java 层未捕获异常处理器（native SIGSEGV 走 JNI 信号处理器）
+    // 捕获 Kotlin/Java 层异常，写入崩溃日志文件
+    // ═══════════════════════════════════════════════════════════════
+    val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+    Thread.setDefaultUncaughtExceptionHandler { t, e ->
+      try {
+        val logDir = File(getExternalFilesDir(null), "logs")
+        logDir.mkdirs()
+        val logFile = File(logDir, "llama_crash.log")
+        val writer = PrintWriter(FileWriter(logFile, true))
+        writer.println("╔════════════════════════════════════════════╗")
+        writer.println("║  JAVA CRASH — ${Date()}                   ║")
+        writer.println("╚════════════════════════════════════════════╝")
+        writer.println("Thread: ${t?.name ?: "unknown"}")
+        e.printStackTrace(writer)
+        writer.flush()
+        writer.close()
+      } catch (_: Exception) {}
+      // 交给默认处理器（生成系统级 crash log）
+      defaultHandler?.uncaughtException(t, e)
+    }
+
     MultiModalDispatcher.init(this)
 
     // 注册内存压力回调

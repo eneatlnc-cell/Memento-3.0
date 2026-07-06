@@ -81,6 +81,9 @@ class NodeRuntime(
    * ① 下载 mmproj.gguf（~200MB）
    * ② 下载主模型 Qwen.gguf（~500MB）
    * ③ 同时加载主模型 + mmproj → 引擎一次性初始化完成
+   *
+   * 重要：中间步骤不 emit Completed，防止 OnboardingFlow 提前完成导航。
+   * 只有引擎加载成功后 _downloadState 才变为 Completed。
    */
   fun startModelDownload() {
     if (_downloadState.value is ModelDownloadState.Completed ||
@@ -89,40 +92,63 @@ class NodeRuntime(
 
     downloadJob?.cancel()
     downloadJob = scope.launch {
-      // ═══════════════ ① 下载 mmproj ═══════════════
-      var mmprojDone = false
-      modelInstaller.downloadMmprojFileOnly().collect { state ->
-        _downloadState.value = state
-        if (state is ModelDownloadState.Completed) mmprojDone = true
-      }
-      if (!mmprojDone) return@launch
-
-      // ═══════════════ ② 下载主模型 ═══════════════
-      var modelDone = false
-      modelInstaller.downloadModelFileOnly().collect { state ->
-        _downloadState.value = state
-        if (state is ModelDownloadState.Completed) modelDone = true
-      }
-      if (!modelDone) return@launch
-
-      // ═══════════════ ③ 一次性加载主模型 + mmproj（与 06:22 逻辑一致）═══════════════
-      if (modelLoaderInitializing.compareAndSet(false, true)) {
-        try {
-          val modelPath = modelInstaller.getModelPath().absolutePath
-          val mmprojPath = modelInstaller.getMmprojPath().absolutePath
-          Log.i("NodeRuntime", "Loading engine with model + mmproj...")
-          withContext(Dispatchers.IO) {
-            modelLoader.reload(modelPath, mmprojPath)
+      // 设置初始化标志，防止 ensureModelLoaded() 在下载期间竞态加载部分文件
+      modelLoaderInitializing.set(true)
+      try {
+        // ═══════════════ ① 下载 mmproj ═══════════════
+        var mmprojDone = false
+        modelInstaller.downloadMmprojFileOnly().collect { state ->
+          // 只透传 Downloading/Failed，不透传 Completed（防止 OnboardingFlow 提前完成）
+          when (state) {
+            is ModelDownloadState.Downloading -> _downloadState.value = state
+            is ModelDownloadState.Failed -> {
+              _downloadState.value = state
+              mmprojDone = false
+            }
+            is ModelDownloadState.Verifying -> _downloadState.value = state
+            is ModelDownloadState.Completed -> mmprojDone = true
+            else -> {}
           }
-          modelLoaderInitialized.set(true)
-          _downloadState.value = ModelDownloadState.Completed
-          Log.i("NodeRuntime", "Engine ready: model + mmproj loaded")
-        } catch (e: Exception) {
-          Log.e("NodeRuntime", "Engine init crashed", e)
-          _downloadState.value = ModelDownloadState.Failed("模型加载崩溃：${e.message}")
-        } finally {
-          modelLoaderInitializing.set(false)
         }
+        if (!mmprojDone) {
+          modelLoaderInitializing.set(false)
+          return@launch
+        }
+
+        // ═══════════════ ② 下载主模型 ═══════════════
+        var modelDone = false
+        modelInstaller.downloadModelFileOnly().collect { state ->
+          when (state) {
+            is ModelDownloadState.Downloading -> _downloadState.value = state
+            is ModelDownloadState.Failed -> {
+              _downloadState.value = state
+              modelDone = false
+            }
+            is ModelDownloadState.Verifying -> _downloadState.value = state
+            is ModelDownloadState.Completed -> modelDone = true
+            else -> {}
+          }
+        }
+        if (!modelDone) {
+          modelLoaderInitializing.set(false)
+          return@launch
+        }
+
+        // ═══════════════ ③ 一次性加载主模型 + mmproj ═══════════════
+        val modelPath = modelInstaller.getModelPath().absolutePath
+        val mmprojPath = modelInstaller.getMmprojPath().absolutePath
+        Log.i("NodeRuntime", "Loading engine with model + mmproj...")
+        withContext(Dispatchers.IO) {
+          modelLoader.reload(modelPath, mmprojPath)
+        }
+        modelLoaderInitialized.set(true)
+        _downloadState.value = ModelDownloadState.Completed
+        Log.i("NodeRuntime", "Engine ready: model + mmproj loaded")
+      } catch (e: Exception) {
+        Log.e("NodeRuntime", "Download/init crashed", e)
+        _downloadState.value = ModelDownloadState.Failed("模型加载失败：${e.message}")
+      } finally {
+        modelLoaderInitializing.set(false)
       }
     }
   }
@@ -157,6 +183,12 @@ class NodeRuntime(
     val path = modelInstaller.getModelPath().absolutePath.takeIf { modelInstaller.isModelFileExists() }
     if (path == null) {
       Log.i("NodeRuntime", "Model not downloaded yet, skip init")
+      return
+    }
+    // 防御：模型文件至少 300MB 才算完整（Q4_K_XL 实际 ~500MB+）
+    val modelSize = modelInstaller.getModelPath().length()
+    if (modelSize < ModelInstaller.MIN_MODEL_SIZE) {
+      Log.w("NodeRuntime", "Model file too small ($modelSize bytes), likely partial download, skip init")
       return
     }
     if (!modelLoaderInitializing.compareAndSet(false, true)) return

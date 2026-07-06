@@ -1,4 +1,4 @@
-# OpenClaw Android Versioning
+# Memento Android Versioning
 
 Android release builds use pinned app metadata instead of auto-bumping `build.gradle.kts`.
 
@@ -62,4 +62,4 @@ The third-party flavor is archived as a signed APK for non-Play distribution. It
 
 `sync:pull` decrypts the Play upload keystore and Gradle signing properties into `apps/android/build/release-signing/`. That directory is gitignored, and Fastlane exports the materialized values as Gradle project properties for the current release command.
 
-If `MATCH_PASSWORD` is not set, the existing manual Gradle-property signing path still works: provide `OPENCLAW_ANDROID_STORE_FILE`, `OPENCLAW_ANDROID_STORE_PASSWORD`, `OPENCLAW_ANDROID_KEY_ALIAS`, and `OPENCLAW_ANDROID_KEY_PASSWORD` through your local Gradle user properties before running release tasks.
+If `MATCH_PASSWORD` is not set, the existing manual Gradle-property signing path still works: provide `MEMENTO_ANDROID_STORE_FILE`, `MEMENTO_ANDROID_STORE_PASSWORD`, `MEMENTO_ANDROID_KEY_ALIAS`, and `MEMENTO_ANDROID_KEY_PASSWORD` through your local Gradle user properties before running release tasks.
