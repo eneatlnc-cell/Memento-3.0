@@ -3,7 +3,6 @@
     <cache-path name="apk_updates" path="updates/" />
     <cache-path name="gen_images" path="images/" />
     <cache-path name="gen_videos" path="hyperframes/" />
-    <cache-path name="gen_scenes" path="scenes/" />
     <external-files-path name="gen_videos_ext" path="hyperframes/" />
     <external-files-path name="models" path="models/" />
 </paths>

@@ -207,57 +207,6 @@ class LocalModelLoader(
     }
   }
 
-  /**
-   * 带 GBNF grammar 约束的结构化生成（漫剧场景 JSON）。
-   * 采样阶段强制约束，无需事后校验循环。
-   *
-   * @param systemPrompt 系统提示词（含可用 assetRef 词典注入）
-   * @param userPrompt   用户本轮输入
-   * @param grammar      GBNF 语法定义（root 规则）
-   */
-  fun generateScene(systemPrompt: String, userPrompt: String, grammar: String): Flow<String> {
-    if (!tryAutoRecover()) {
-      Log.w(TAG, "Model not ready, cannot generate scene")
-      return callbackFlow {
-        trySend("模型尚未下载完成，请等待下载结束后再试。")
-        close()
-      }
-    }
-    return callbackFlow {
-      val inferenceScope = CoroutineScope(Dispatchers.IO)
-
-      val inferenceJob = inferenceScope.launch {
-        try {
-          engine.generateScene(systemPrompt, userPrompt, grammar).collect { chunk ->
-            trySend(chunk)
-          }
-        } catch (e: CancellationException) {
-          throw e
-        } catch (e: Exception) {
-          Log.e(TAG, "Scene generation error: ${e.message}")
-        }
-        close()
-      }
-
-      val finished = withTimeoutOrNull(INFERENCE_TIMEOUT_MS * 2) {
-        inferenceJob.join()
-        true
-      }
-
-      if (finished != true) {
-        inferenceScope.cancel()
-        Log.e(TAG, "Scene generation timed out")
-        trySend("抱歉，场景生成超时了。可能是手机内存不足，请尝试重启 App")
-        // C-N4 修复：安全等待推理退出，在 IO 线程执行
-        withContext(Dispatchers.IO) { engine.close() }
-        initialized = false
-        close()
-      }
-
-      awaitClose { inferenceScope.cancel() }
-    }
-  }
-
   fun isRealModelAvailable(): Boolean = initialized && modelPath != null
 
   fun unload() {

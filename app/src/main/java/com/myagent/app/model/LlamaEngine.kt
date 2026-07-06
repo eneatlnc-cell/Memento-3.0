@@ -54,7 +54,7 @@ class LlamaEngine(private val context: Context) {
   private val initializing = AtomicBoolean(false)
 
   // 串行化 JNI 推理：同一 ctx 上并发 llama_decode 会损坏 KV cache。
-  // 场景生成（SceneDirector）与聊天回复共用同一引擎，必须串行执行。
+  // 聊天回复与图片/视频生成共用同一引擎，必须串行执行。
   private val inferenceSemaphore = Semaphore(1)
 
   /** 当前使用的后端（用于日志/诊断） */
@@ -386,58 +386,6 @@ class LlamaEngine(private val context: Context) {
       }
       append("<|im_end|>\n")
       append("<|im_start|>assistant\n")
-    }
-  }
-
-  /**
-   * 带 GBNF grammar 约束的结构化生成（漫剧场景 JSON）。
-   *
-   * 设计：在采样阶段用 grammar 强制约束输出结构，模型物理上无法生成非法 JSON。
-   * 无需事后校验循环，端侧 0.8B 也能稳定产出结构化数据。
-   *
-   * @param systemPrompt 系统提示词（含可用 assetRef 词典注入）
-   * @param userPrompt   用户本轮输入
-   * @param grammar      GBNF 语法定义（root 规则）
-   * @return 流式 JSON 字符串片段
-   */
-  fun generateScene(systemPrompt: String, userPrompt: String, grammar: String): Flow<String> {
-    val fullPrompt = buildQwenChatPrompt(systemPrompt, userPrompt, imageCount = 0)
-    return callbackFlow {
-      inferenceSemaphore.withPermit {
-        val ctxSnapshot = synchronized(this@LlamaEngine) {
-          if (closing || ctx == 0L) 0L
-          else { activeInferences.incrementAndGet(); ctx }
-        }
-        if (ctxSnapshot == 0L) {
-          Log.e(TAG, "Engine closing or not initialized — cannot generate scene")
-          close()
-          return@withPermit
-        }
-        try {
-          LlamaNative.completionWithGrammar(
-            ctx = ctxSnapshot,
-            prompt = fullPrompt,
-            grammarStr = grammar,
-            maxTokens = 768,  // 结构化 JSON 需要更多 token
-            temperature = 0.4f,  // 结构化输出降温度，更稳定
-            topP = 0.9f,
-            topK = 40,
-            callback = object : LlamaNative.TokenCallback {
-              override fun onToken(piece: String, isEos: Boolean) {
-                if (piece.isNotEmpty()) trySend(piece)
-                if (isEos) close()
-              }
-            },
-          )
-          if (!isClosedForSend) close()
-        } catch (e: Exception) {
-          Log.e(TAG, "Generate scene error: ${e.message}", e)
-          close(e)
-        } finally {
-          activeInferences.decrementAndGet()
-        }
-      }
-      awaitClose {}
     }
   }
 

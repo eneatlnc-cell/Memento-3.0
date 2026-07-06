@@ -17,7 +17,6 @@ import com.myagent.app.model.LocalModelLoader
 import com.myagent.app.model.PersonaManager
 import com.myagent.app.multimodal.MultiModalDispatcher
 import com.myagent.app.multimodal.VideoFrameExtractor
-import com.myagent.app.scene.SceneDirector
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -64,14 +63,10 @@ class ChatController(
   private var currentStreamJob: Job? = null
   private var currentAssistantId: String? = null
 
-  // 漫剧导演（懒加载，首次生成场景时才实例化）
-  private val sceneDirector by lazy { SceneDirector(context, modelLoader) }
-
   // ── 多模态标记解析 ──
 
   private val imageTag = Regex("""^\[GEN_IMAGE:(.+?)]\s*""")
   private val videoTag = Regex("""^\[GEN_VIDEO:(.+?)]\s*""")
-  private val sceneTag = Regex("""^\[GEN_SCENE:(.+?)]\s*""")
 
   private data class GenAction(val type: String, val prompt: String)
 
@@ -85,11 +80,6 @@ class ChatController(
       val prompt = match.groupValues[1].trim()
       val clean = text.removeRange(match.range).trimStart()
       return clean to GenAction("video", prompt)
-    }
-    sceneTag.find(text)?.let { match ->
-      val prompt = match.groupValues[1].trim()
-      val clean = text.removeRange(match.range).trimStart()
-      return clean to GenAction("scene", prompt)
     }
     return text to null
   }
@@ -491,52 +481,6 @@ class ChatController(
           _messages.update { it.map { m ->
             if (m.id == progressId) m.copy(content = "视频生成失败: ${e.message}") else m
           } }
-        }
-      }
-      "scene" -> {
-        val progressId = UUID.randomUUID().toString()
-        val progressMsg = ChatMessage(
-          id = progressId,
-          role = "assistant",
-          content = "正在生成漫剧「${action.prompt}」，请稍候...",
-        )
-        _messages.update { it + progressMsg }
-        try {
-          // SceneDirector.direct() 内部走 inferenceSemaphore 串行化，
-          // 与聊天回复共用同一 LlamaEngine 不会并发 llama_decode。
-          val outputDir = File(cacheDir, "scenes").also { it.mkdirs() }
-          val result = sceneDirector.direct(action.prompt, outputDir)
-          when (result) {
-            is SceneDirector.DirectorResult.Success -> {
-              val videoFile = result.videoFile
-              if (videoFile.length() == 0L || videoFile.length() < 1024) {
-                throw Exception("视频文件过小或为空，渲染可能失败")
-              }
-              val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", videoFile)
-              Log.i(TAG, "Scene generated: ${videoFile.absolutePath} (${videoFile.length() / 1024}KB)")
-              val sceneMsg = ChatMessage(
-                id = UUID.randomUUID().toString(),
-                role = "assistant",
-                content = action.prompt,
-                type = "video",
-                attachmentUri = uri.toString(),
-                attachmentMimeType = "video/mp4",
-                localPath = videoFile.absolutePath,
-              )
-              _messages.update { it.map { m -> if (m.id == progressId) sceneMsg else m } }
-            }
-            is SceneDirector.DirectorResult.Failure -> {
-              throw Exception(result.reason)
-            }
-          }
-        } catch (e: Exception) {
-          Log.e(TAG, "Scene generation failed: ${e.message}", e)
-          _messages.update { it.map { m ->
-            if (m.id == progressId) m.copy(content = "漫剧生成失败: ${e.message}") else m
-          } }
-        } finally {
-          // 无论成功失败都清理本次素材注册，避免下次场景残留
-          sceneDirector.clear()
         }
       }
     }
