@@ -257,6 +257,11 @@ class NodeRuntime(
     chatController.sendImage(imageUri, caption)
   }
 
+  /** 多图输入：用户可一次发送 ≤10 张图片 */
+  fun sendImages(imageUris: List<String>, caption: String = "") {
+    chatController.sendImages(imageUris, caption)
+  }
+
   fun sendVideo(videoUri: String, caption: String = "") {
     chatController.sendVideo(videoUri, caption)
   }

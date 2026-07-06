@@ -167,8 +167,8 @@ fun ChatScreen(
     ChatInputBar(
       isLoading = isLoading,
       onSendText = { text -> viewModel.sendChat(text) },
-      onSendImage = { uri -> viewModel.sendImage(uri) },
-      onSendVideo = { uri -> viewModel.sendVideo(uri) },
+      onSendImages = { uris, caption -> viewModel.sendImages(uris, caption) },
+      onSendVideo = { uri, caption -> viewModel.sendVideo(uri, caption) },
       onAbort = { viewModel.abortChat() },
     )
   }

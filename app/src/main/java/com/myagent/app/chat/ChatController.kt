@@ -487,39 +487,57 @@ class ChatController(
   }
 
   fun sendImage(imageUri: String, caption: String = "") {
+    sendImages(listOf(imageUri), caption)
+  }
+
+  /**
+   * 多图输入 — 用户可一次发送 ≤10 张图片，作为多模态上下文一起推理。
+   *
+   * 典型用法：
+   * - 多角度拍摄同一物体 → LLM 综合理解
+   * - 用户手动挑选视频关键帧 → 比系统采样更可控
+   * - 前后对比图 → 变化检测
+   *
+   * Qwen3.5-VL 原生支持多图输入，所有图片路径一起传入 [imagePaths]。
+   */
+  fun sendImages(imageUris: List<String>, caption: String = "") {
+    if (imageUris.isEmpty()) return
+
+    val displayContent = caption.ifEmpty { "图片 ×${imageUris.size}" }
+    val firstUri = imageUris.first()
     val message = ChatMessage(
       id = UUID.randomUUID().toString(),
       role = "user",
-      content = caption.ifEmpty { "图片" },
+      content = displayContent,
       type = "image",
-      attachmentUri = imageUri,
+      attachmentUri = firstUri,
     )
     _messages.update { it + message }
 
     // 图片解析（文件 I/O + Bitmap 解码）放到 IO 线程，避免主线程 ANR
     scope.launch {
       try {
-        val imagePath = withContext(Dispatchers.IO) {
-          resolveImagePath(Uri.parse(imageUri))
+        val imagePaths = withContext(Dispatchers.IO) {
+          imageUris.mapNotNull { resolveImagePath(Uri.parse(it)) }
         }
-        if (imagePath == null) {
+        if (imagePaths.isEmpty()) {
           _errorText.value = "图片处理失败，请检查图片是否过大或格式不支持"
           return@launch
         }
-        memoryManager.saveMemory(role = "user", content = "[图片]")
+        memoryManager.saveMemory(role = "user", content = "[图片 ×${imagePaths.size}]")
         startInference(
-          promptText = caption.ifEmpty { "请描述这张图片" },
-          imagePaths = listOf(imagePath),
+          promptText = caption.ifEmpty { "请描述这些图片" },
+          imagePaths = imagePaths,
         )
       } catch (e: OutOfMemoryError) {
-        Log.e(TAG, "sendImage OOM: ${e.message}")
+        Log.e(TAG, "sendImages OOM: ${e.message}")
         _errorText.value = "图片过大，内存不足，请选择较小的图片"
       } catch (e: Exception) {
-        Log.e(TAG, "sendImage failed: ${e.message}", e)
+        Log.e(TAG, "sendImages failed: ${e.message}", e)
         _errorText.value = "图片处理失败: ${e.message}"
       } catch (t: Throwable) {
         // 兜底：捕获 BitmapFactory 等原生层异常
-        Log.e(TAG, "sendImage fatal: ${t.javaClass.name} — ${t.message}")
+        Log.e(TAG, "sendImages fatal: ${t.javaClass.name} — ${t.message}")
         _errorText.value = "图片处理遇到严重错误，请尝试其他图片"
       }
     }

@@ -194,18 +194,24 @@ class MainViewModel(
   }
 
   fun sendImage(uri: Uri, caption: String = "") {
+    sendImages(listOf(uri), caption)
+  }
+
+  /** 多图输入：用户可一次发送 ≤10 张图片，作为多模态上下文一起推理 */
+  fun sendImages(uris: List<Uri>, caption: String = "") {
     try {
+      val uriStrings = uris.map { it.toString() }
       val runtime = runtimeRef.value
       if (runtime == null) {
-        Log.w("MainViewModel", "Runtime not ready, queueing image for later")
+        Log.w("MainViewModel", "Runtime not ready, queueing images for later")
         // H-N1 修复：加锁保护 pendingActions 的并发访问
-        synchronized(pendingActions) { pendingActions.add { runtimeRef.value?.sendImage(uri.toString(), caption) } }
+        synchronized(pendingActions) { pendingActions.add { runtimeRef.value?.sendImages(uriStrings, caption) } }
         queueRuntimeStartup()
         return
       }
-      runtime.sendImage(uri.toString(), caption)
+      runtime.sendImages(uriStrings, caption)
     } catch (e: Exception) {
-      Log.e("MainViewModel", "sendImage failed", e)
+      Log.e("MainViewModel", "sendImages failed", e)
     }
   }
 
