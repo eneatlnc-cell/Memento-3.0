@@ -6,7 +6,6 @@ import com.myagent.app.chat.OutgoingAttachment
 import com.myagent.app.model.ModelDownloadState
 import com.myagent.app.multimodal.VideoConfig
 import android.app.Application
-import android.graphics.Bitmap
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
@@ -285,8 +284,6 @@ class MainViewModel(
   }
 
   // --- 多模态操作 ---
-
-  suspend fun generateImage(prompt: String): Bitmap {
-    return ensureRuntime().generateImage(prompt)
-  }
+  // v3.2：多模态生成已迁移到 ChatController + StructuredRenderer
+  // 模型输出 SVG → StructuredRenderer 渲染，不再需要 MainViewModel 手动调度
 }

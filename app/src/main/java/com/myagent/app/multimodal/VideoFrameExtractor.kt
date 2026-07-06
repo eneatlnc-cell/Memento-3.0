@@ -14,27 +14,34 @@ import java.io.FileOutputStream
  * llama.cpp libmtmd 当前不直接接受视频输入，采用帧采样替代方案：
  * MediaMetadataRetriever 提取帧 → 压缩为 JPEG → 作为多张图片传给 Qwen3.5。
  *
- * 限制：
- * - 视频最大 50MB
- * - 截取前 5 秒（不足则全部）
- * - 每秒采样 2 帧（降低崩溃面）
+ * v3.2 架构升级：
+ * - 输入视频时长从 5s 缩短为 1s（用户手动挑选 1s 关键片段）
+ * - 采样帧率从 2fps 提升为 24fps（1s × 24fps = 24 帧，达到视频最低标准）
+ * - 帧尺寸从 1024 宽降为 256×256 缩略图（减少模型 token 负担）
+ * - JPEG 质量从 80 降为 60（缩略图够用，进一步减小体积）
  *
- * **安全设计 v2.3**：
- * - MIME 类型白名单：只允许已知安全的容器格式，拒绝未知格式
- * - 文件头魔数校验：在调用 MediaMetadataRetriever 之前验证文件不是损坏的
- * - OPTION_CLOSEST_SYNC：只提取关键帧（I 帧），避免解码 B 帧导致的解码器崩溃
- * - 逐帧隔离：每个 getFrameAtTime 独立 try-catch，单帧失败不影响其他帧
- * - 首帧快速失败：如果第一帧提取失败，立即中止整个视频
- * - 降采样：3fps → 2fps，减少原生 API 调用次数
+ * 安全设计保留：
+ * - MIME 类型白名单 + 文件头魔数校验
+ * - OPTION_CLOSEST_SYNC 防止 B 帧解码崩溃
+ * - 逐帧隔离 try-catch
+ * - 首帧快速失败
+ *
+ * 崩溃风险评估：
+ * - 1s 视频通常只有 1-2 个 I 帧，OPTION_CLOSEST_SYNC 会复用最近的关键帧
+ * - 实际采到的可能是重复帧，但不会崩溃
+ * - 24 帧 × 256×256 × JPEG60 ≈ 1.5MB，模型推理 token 量可控
  */
 object VideoFrameExtractor {
   private const val TAG = "VideoFrameExtractor"
 
-  /** 最大输入视频时长（秒） */
-  const val MAX_DURATION_SEC = 5
+  /** 最大输入视频时长（秒）— v3.2: 5s → 1s */
+  const val MAX_DURATION_SEC = 1
 
-  /** 每秒采样帧数（降低以减少崩溃面） */
-  const val FPS_SAMPLE = 2
+  /** 每秒采样帧数 — v3.2: 2fps → 24fps（视频最低标准） */
+  const val FPS_SAMPLE = 24
+
+  /** 缩略图尺寸 — v3.2 新增：256×256，减少模型 token 负担 */
+  const val THUMBNAIL_SIZE = 256
 
   /** 最大文件大小（字节） */
   const val MAX_FILE_SIZE = 50L * 1024 * 1024
@@ -132,15 +139,16 @@ object VideoFrameExtractor {
 
         var scaled: Bitmap? = null
         try {
-          // 缩放至最大 1024 宽
-          scaled = if (bitmap.width > 1024) {
-            val ratio = 1024f / bitmap.width
-            Bitmap.createScaledBitmap(bitmap, 1024, (bitmap.height * ratio).toInt(), true)
+          // v3.2: 缩放至 256×256 缩略图（原 1024 宽）
+          // 缩略图用于模型理解，256×256 足够 Qwen3.5-VL 识别内容
+          scaled = if (bitmap.width != THUMBNAIL_SIZE || bitmap.height != THUMBNAIL_SIZE) {
+            Bitmap.createScaledBitmap(bitmap, THUMBNAIL_SIZE, THUMBNAIL_SIZE, true)
           } else bitmap
 
           val frameFile = File(cacheDir, "vf_${System.currentTimeMillis()}_${i}.jpg")
           FileOutputStream(frameFile).use { out ->
-            scaled.compress(Bitmap.CompressFormat.JPEG, 80, out)
+            // v3.2: JPEG 质量从 80 降为 60（缩略图够用）
+            scaled.compress(Bitmap.CompressFormat.JPEG, 60, out)
           }
           frames.add(frameFile.absolutePath)
         } catch (t: Throwable) {

@@ -63,25 +63,97 @@ class ChatController(
   private var currentStreamJob: Job? = null
   private var currentAssistantId: String? = null
 
+  // v3.2 编辑模式：缓存最近一次生成的 SVG，供 EDIT_IMAGE 引用
+  @Volatile
+  private var lastGeneratedSvg: String? = null
+
   // ── 多模态标记解析 ──
+  //
+  // v3.2 架构重构：模型输出 SVG 代码块，而非主题词。
+  // 标记格式：
+  //   [GEN_IMAGE]\n<svg>...</svg>\n[/GEN_IMAGE]
+  //   [GEN_VIDEO frames="24"]\n<frame>...</frame>...\n[/GEN_VIDEO]
+  //   [EDIT_IMAGE]\n<svg>...</svg>\n[/EDIT_IMAGE]
+  //
+  // 应用解析标记 → 提取 SVG → StructuredRenderer 渲染。
+  // 渲染失败时（SVG 非法）降级为文字错误提示。
 
-  private val imageTag = Regex("""^\[GEN_IMAGE:(.+?)]\s*""")
-  private val videoTag = Regex("""^\[GEN_VIDEO:(.+?)]\s*""")
+  private val genImageBlock = Regex("""\[GEN_IMAGE]\s*(.*?)\s*\[/GEN_IMAGE]""", RegexOption.DOT_MATCHES_ALL)
+  private val genVideoBlock = Regex("""\[GEN_VIDEO[^\]]*]\s*(.*?)\s*\[/GEN_VIDEO]""", RegexOption.DOT_MATCHES_ALL)
+  private val editImageBlock = Regex("""\[EDIT_IMAGE]\s*(.*?)\s*\[/EDIT_IMAGE]""", RegexOption.DOT_MATCHES_ALL)
 
-  private data class GenAction(val type: String, val prompt: String)
+  private data class GenAction(
+    val type: String,         // "image" | "video" | "edit"
+    val svg: String,          // 图片 SVG（image/edit 用）
+    val frames: List<String>, // 视频 SVG 帧列表（video 用）
+    val description: String,  // 模型在标记外的说明文字
+  )
 
+  /**
+   * 解析多模态标记，返回 (干净文字, 动作)。
+   * 动作为 null 表示纯文本回复。
+   */
   private fun parseMultimodalTag(text: String): Pair<String, GenAction?> {
-    imageTag.find(text)?.let { match ->
-      val prompt = match.groupValues[1].trim()
-      val clean = text.removeRange(match.range).trimStart()
-      return clean to GenAction("image", prompt)
+    // 优先匹配 EDIT_IMAGE（编辑模式）
+    editImageBlock.find(text)?.let { match ->
+      val svg = match.groupValues[1].trim()
+      val clean = text.removeRange(match.range).trim()
+      return clean to GenAction("edit", svg = svg, frames = emptyList(), description = clean)
     }
-    videoTag.find(text)?.let { match ->
-      val prompt = match.groupValues[1].trim()
-      val clean = text.removeRange(match.range).trimStart()
-      return clean to GenAction("video", prompt)
+
+    // GEN_IMAGE
+    genImageBlock.find(text)?.let { match ->
+      val svg = extractSvg(match.groupValues[1])
+      val clean = text.removeRange(match.range).trim()
+      if (svg.isEmpty()) {
+        return clean to null
+      }
+      return clean to GenAction("image", svg = svg, frames = emptyList(), description = clean)
     }
+
+    // GEN_VIDEO
+    genVideoBlock.find(text)?.let { match ->
+      val frames = extractVideoFrames(match.groupValues[1])
+      val clean = text.removeRange(match.range).trim()
+      if (frames.isEmpty()) {
+        return clean to null
+      }
+      return clean to GenAction("video", svg = "", frames = frames, description = clean)
+    }
+
     return text to null
+  }
+
+  /** 从文本中提取第一个 <svg>...</svg> 块 */
+  private fun extractSvg(text: String): String {
+    val svgRegex = Regex("""<svg[\s\S]*?</svg>""", RegexOption.IGNORE_CASE)
+    return svgRegex.find(text)?.value?.trim() ?: ""
+  }
+
+  /** 从视频标记内容中提取所有 <frame>...</frame> 内的 SVG */
+  private fun extractVideoFrames(text: String): List<String> {
+    val frameRegex = Regex("""<frame[^>]*>([\s\S]*?)</frame>""", RegexOption.IGNORE_CASE)
+    return frameRegex.findAll(text).map { match ->
+      extractSvg(match.groupValues[1])
+    }.filter { it.isNotEmpty() }.toList()
+  }
+
+  /** 判断用户是否请求编辑已生成的图片 */
+  private fun isEditRequest(text: String): Boolean {
+    val lower = text.lowercase()
+    val keywords = listOf("编辑", "修改", "替换", "去掉", "换成", "改成", "调整", "edit", "modify", "replace", "remove")
+    return keywords.any { it in lower } && lastGeneratedSvg != null
+  }
+
+  /** 判断用户是否请求生成图片/视频（用于动态调整 maxTokens） */
+  private fun isGenerationRequest(text: String): Boolean {
+    val lower = text.lowercase()
+    val genKeywords = listOf(
+      "画", "生成", "做", "绘制", "设计", "create", "generate", "draw", "make", "design",
+      "动画", "视频", "video", "animation",
+    )
+    val editKeywords = listOf("编辑", "修改", "替换", "edit", "modify", "replace")
+    return genKeywords.any { it in lower } || editKeywords.any { it in lower }
   }
 
   // ── URI → 文件路径 ──
@@ -319,12 +391,28 @@ class ChatController(
         // 延迟添加助手消息：只有首 token 到达后才插入，避免 cancel 时残留空气泡
         var assistantAdded = false
 
+        // v3.2 编辑模式：若用户请求编辑且有缓存 SVG，把原 SVG 作为上下文注入 prompt
+        val effectivePrompt = if (isEditRequest(promptText) && lastGeneratedSvg != null) {
+          buildString {
+            append(promptText)
+            append("\n\n[参考SVG — 请基于此修改]\n")
+            append(lastGeneratedSvg)
+          }
+        } else {
+          promptText
+        }
+
+        // v3.2：SVG 输出需要更大 token 空间，图片/视频生成时用 2048
+        val isGenRequest = isGenerationRequest(promptText)
+        val maxTokens = if (isGenRequest) 2048 else 512
+
         val fullResponse = StringBuilder()
         val inferenceFlow = if (validPaths.isNotEmpty()) {
-          Log.i(TAG, "Multimodal inference: text + ${validPaths.size} image(s)")
-          modelLoader.generateWithImages(systemBlock, promptText, validPaths)
+          Log.i(TAG, "Multimodal inference: text + ${validPaths.size} image(s), maxTokens=$maxTokens")
+          modelLoader.generateWithImages(systemBlock, effectivePrompt, validPaths, maxTokens)
         } else {
-          modelLoader.generate(systemBlock, promptText)
+          Log.i(TAG, "Text inference: maxTokens=$maxTokens")
+          modelLoader.generate(systemBlock, effectivePrompt, maxTokens)
         }
 
         // 流式输出节流：每 50ms 最多更新一次 StateFlow
@@ -411,16 +499,17 @@ class ChatController(
   }
 
   /**
-   * 调度多模态生成 — 图片/视频。
+   * 调度多模态生成 — v3.2 重构。
+   *
+   * 模型已输出 SVG 代码，本方法将其交给 StructuredRenderer 渲染。
+   * 渲染失败时（SVG 非法）降级为文字错误提示。
    */
   private suspend fun dispatchGeneration(action: GenAction) {
     when (action.type) {
-      "image" -> {
+      "image", "edit" -> {
         try {
-          val bitmap = MultiModalDispatcher.generateImage(action.prompt)
-          // H-M4 修复：bitmap 必须回收，否则每张 ~4MB native 内存泄漏
+          val bitmap = MultiModalDispatcher.renderSvgImage(action.svg)
           try {
-            // 保存到 cacheDir/images/ 子目录，匹配 FileProvider 的路径映射
             val imagesDir = File(cacheDir, "images").also { it.mkdirs() }
             val file = File(imagesDir, "gen_${UUID.randomUUID()}.png")
             val ok = FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
@@ -428,11 +517,15 @@ class ChatController(
               throw Exception("图片写入失败，可能是磁盘空间不足")
             }
             val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-            Log.i(TAG, "Generated image saved: ${file.absolutePath} (${file.length() / 1024}KB)")
+            Log.i(TAG, "Rendered image saved: ${file.absolutePath} (${file.length() / 1024}KB)")
+
+            // 缓存最近生成的 SVG，供编辑模式引用
+            lastGeneratedSvg = action.svg
+
             val imageMsg = ChatMessage(
               id = UUID.randomUUID().toString(),
               role = "assistant",
-              content = action.prompt,
+              content = action.description.ifEmpty { "已生成图片" },
               type = "image",
               attachmentUri = uri.toString(),
               attachmentMimeType = "image/png",
@@ -443,8 +536,8 @@ class ChatController(
             bitmap.recycle()
           }
         } catch (e: Exception) {
-          Log.e(TAG, "Image generation failed: ${e.message}", e)
-          _errorText.value = "图片生成失败: ${e.message}"
+          Log.e(TAG, "Image rendering failed: ${e.message}", e)
+          _errorText.value = "图片渲染失败: ${e.message}"
         }
       }
       "video" -> {
@@ -452,24 +545,33 @@ class ChatController(
         val progressMsg = ChatMessage(
           id = progressId,
           role = "assistant",
-          content = "正在渲染视频「${action.prompt}」，请稍候...",
+          content = "正在渲染视频（${action.frames.size} 帧），请稍候...",
         )
         _messages.update { it + progressMsg }
         try {
-          val videoFile = MultiModalDispatcher.renderVideo(action.prompt)
-          if (videoFile.length() == 0L) {
-            throw Exception("视频文件为空，渲染可能超时")
+          if (action.frames.isEmpty()) {
+            throw Exception("视频帧为空，模型未输出有效 SVG")
           }
-          // 基本完整性检查：MP4 文件至少需要 ftyp + moov 原子（最小 ~1KB）
+          val videoFile = MultiModalDispatcher.renderSvgVideo(action.frames) { progress ->
+            val pct = (progress * 100).toInt()
+            _messages.update { list ->
+              list.map { m ->
+                if (m.id == progressId) m.copy(content = "正在渲染视频（${action.frames.size} 帧）... $pct%") else m
+              }
+            }
+          }
+          if (videoFile.length() == 0L) {
+            throw Exception("视频文件为空，渲染可能失败")
+          }
           if (videoFile.length() < 1024) {
             throw Exception("视频文件过小，可能已损坏")
           }
           val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", videoFile)
-          Log.i(TAG, "Generated video saved: ${videoFile.absolutePath} (${videoFile.length() / 1024}KB)")
+          Log.i(TAG, "Rendered video saved: ${videoFile.absolutePath} (${videoFile.length() / 1024}KB)")
           val videoMsg = ChatMessage(
             id = UUID.randomUUID().toString(),
             role = "assistant",
-            content = action.prompt,
+            content = action.description.ifEmpty { "已生成视频" },
             type = "video",
             attachmentUri = uri.toString(),
             attachmentMimeType = "video/mp4",
@@ -477,9 +579,9 @@ class ChatController(
           )
           _messages.update { it.map { m -> if (m.id == progressId) videoMsg else m } }
         } catch (e: Exception) {
-          Log.e(TAG, "Video generation failed: ${e.message}", e)
+          Log.e(TAG, "Video rendering failed: ${e.message}", e)
           _messages.update { it.map { m ->
-            if (m.id == progressId) m.copy(content = "视频生成失败: ${e.message}") else m
+            if (m.id == progressId) m.copy(content = "视频渲染失败: ${e.message}") else m
           } }
         }
       }

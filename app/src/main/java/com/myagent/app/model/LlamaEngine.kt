@@ -243,15 +243,21 @@ class LlamaEngine(private val context: Context) {
   }
 
   /**
-   * 流式生成回复（纯文本）。
+   * 流式生成回复（纯文本，可自定义 maxTokens）。
    *
-   * @param systemPrompt 系统提示词 + 记忆上下文（已由上层拼好），为空则省略 system 段
-   * @param userPrompt   用户本轮输入的纯文本（不含 chat template 标记）
+   * v3.2：多模态生成需要更大的输出空间（SVG 代码较长）。
+   * - 普通对话：maxTokens=512（默认）
+   * - 图片生成（SVG）：maxTokens=2048
+   * - 视频分批推理（6帧 SVG）：maxTokens=1024
    *
    * LlamaEngine 是 Qwen chat template 的唯一权威：所有 <|im_start|>/<|im_end|>
    * 在这里构造，上层（ChatController/LocalModelLoader）只传语义内容。
    */
-  fun generate(systemPrompt: String, userPrompt: String): Flow<String> {
+  fun generate(
+    systemPrompt: String,
+    userPrompt: String,
+    maxTokens: Int = 512,
+  ): Flow<String> {
     val fullPrompt = buildQwenChatPrompt(systemPrompt, userPrompt, imageCount = 0)
     return callbackFlow {
       // 串行化 JNI 推理 + 原子 check-and-increment，防止并发 llama_decode 损坏 KV cache
@@ -269,7 +275,7 @@ class LlamaEngine(private val context: Context) {
           LlamaNative.completion(
             ctx = ctxSnapshot,
             prompt = fullPrompt,
-            maxTokens = 512,
+            maxTokens = maxTokens,
             temperature = 0.7f,
             topP = 0.8f,
             topK = 20,
@@ -298,14 +304,20 @@ class LlamaEngine(private val context: Context) {
    * @param systemPrompt 系统提示词 + 记忆上下文（已由上层拼好），为空则省略 system 段
    * @param userPrompt   用户本轮输入的纯文本（不含 chat template 标记）
    * @param imagePaths   图片绝对路径列表；每张图会在 user 段末尾插入一个 <__media__> 占位符
+   * @param maxTokens    v3.2 新增：可自定义输出长度（SVG 输出需要更大空间）
    *
    * 如果 mmproj 未加载，回退为纯文本（不附带图片）。
    */
-  fun generateWithImages(systemPrompt: String, userPrompt: String, imagePaths: List<String>): Flow<String> {
+  fun generateWithImages(
+    systemPrompt: String,
+    userPrompt: String,
+    imagePaths: List<String>,
+    maxTokens: Int = 2048,
+  ): Flow<String> {
     // 早检查：无多模态或无图片时直接回退到纯文本（不占用 semaphore）
     if (mctx == 0L || imagePaths.isEmpty()) {
       Log.w(TAG, "mmproj not loaded or no images, falling back to text-only")
-      return generate(systemPrompt, userPrompt)
+      return generate(systemPrompt, userPrompt, maxTokens)
     }
     val fullPrompt = buildQwenChatPrompt(systemPrompt, userPrompt, imageCount = imagePaths.size)
     return callbackFlow {
@@ -334,7 +346,7 @@ class LlamaEngine(private val context: Context) {
             mctx = mctxSnapshot,
             prompt = fullPrompt,
             imagePaths = imagePaths.toTypedArray(),
-            maxTokens = 512,
+            maxTokens = maxTokens,
             temperature = 0.7f,
             topP = 0.8f,
             topK = 20,

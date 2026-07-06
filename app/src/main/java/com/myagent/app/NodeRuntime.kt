@@ -1,6 +1,5 @@
 package com.myagent.app
 
-import android.graphics.Bitmap
 import android.util.Log
 import com.myagent.app.chat.ChatController
 import com.myagent.app.chat.ChatMessage
@@ -8,7 +7,6 @@ import com.myagent.app.chat.OutgoingAttachment
 import com.myagent.app.memory.MemoryManager
 import com.myagent.app.model.LocalModelLoader
 import com.myagent.app.model.ModelDownloadState
-import com.myagent.app.multimodal.MultiModalDispatcher
 import com.myagent.app.multimodal.VideoConfig
 import com.myagent.app.proactive.ProactiveTrigger
 import kotlinx.coroutines.CoroutineScope
@@ -279,13 +277,9 @@ class NodeRuntime(
   }
 
   // --- 多模态调度 ---
-
-  /**
-   * 生成图片
-   */
-  suspend fun generateImage(prompt: String, style: String? = null): Bitmap {
-    return MultiModalDispatcher.generateImage(prompt, style)
-  }
+  // v3.2：多模态生成已迁移到 ChatController + StructuredRenderer
+  // 模型输出 SVG → StructuredRenderer 渲染，不再需要 NodeRuntime 手动调度
+  // （旧的 generateImage/renderVideo 接口已废弃）
 
   // --- 主动搭话 ---
 

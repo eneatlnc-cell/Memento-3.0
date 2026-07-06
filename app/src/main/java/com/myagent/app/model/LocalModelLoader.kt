@@ -112,7 +112,11 @@ class LocalModelLoader(
    * @param systemPrompt 系统提示词 + 记忆上下文（已由上层拼好），为空则省略 system 段
    * @param userPrompt   用户本轮输入的纯文本（不含 chat template 标记，由 LlamaEngine 包装）
    */
-  fun generate(systemPrompt: String, userPrompt: String): Flow<String> {
+  fun generate(
+    systemPrompt: String,
+    userPrompt: String,
+    maxTokens: Int = 512,
+  ): Flow<String> {
     if (!tryAutoRecover()) {
       Log.w(TAG, "Model not ready, cannot generate")
       return callbackFlow {
@@ -125,7 +129,7 @@ class LocalModelLoader(
 
       val inferenceJob = inferenceScope.launch {
         try {
-          engine.generate(systemPrompt, userPrompt).collect { chunk ->
+          engine.generate(systemPrompt, userPrompt, maxTokens).collect { chunk ->
             trySend(chunk)
           }
         } catch (e: CancellationException) {
@@ -164,7 +168,12 @@ class LocalModelLoader(
    * @param userPrompt   用户本轮输入的纯文本（不含 chat template 标记）
    * @param imagePaths   图片绝对路径列表
    */
-  fun generateWithImages(systemPrompt: String, userPrompt: String, imagePaths: List<String>): Flow<String> {
+  fun generateWithImages(
+    systemPrompt: String,
+    userPrompt: String,
+    imagePaths: List<String>,
+    maxTokens: Int = 2048,
+  ): Flow<String> {
     if (!tryAutoRecover()) {
       Log.w(TAG, "Model not ready, cannot generate")
       return callbackFlow {
@@ -177,7 +186,7 @@ class LocalModelLoader(
 
       val inferenceJob = inferenceScope.launch {
         try {
-          engine.generateWithImages(systemPrompt, userPrompt, imagePaths).collect { chunk ->
+          engine.generateWithImages(systemPrompt, userPrompt, imagePaths, maxTokens).collect { chunk ->
             trySend(chunk)
           }
         } catch (e: CancellationException) {
