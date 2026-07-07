@@ -11,14 +11,14 @@ import java.io.FileOutputStream
 /**
  * 视频帧采样器 — 从视频中提取关键帧作为图片列表。
  *
- * llama.cpp libmtmd 当前不直接接受视频输入，采用帧采样替代方案：
- * MediaMetadataRetriever 提取帧 → 压缩为 JPEG → 作为多张图片传给 Qwen3.5。
+ * 云端 API（GPT-4o）当前不直接接受视频输入，采用帧采样替代方案：
+ * MediaMetadataRetriever 提取帧 → 压缩为 JPEG → 作为多张图片传给 GPT-4o。
  *
- * v3.2 架构升级：
- * - 输入视频时长从 5s 缩短为 1s（用户手动挑选 1s 关键片段）
- * - 采样帧率从 2fps 提升为 24fps（1s × 24fps = 24 帧，达到视频最低标准）
- * - 帧尺寸从 1024 宽降为 256×256 缩略图（减少模型 token 负担）
- * - JPEG 质量从 80 降为 60（缩略图够用，进一步减小体积）
+ * v4.0 架构（云端版）：
+ * - 输入视频时长限制为 1s（用户手动挑选 1s 关键片段）
+ * - 采样帧率为 24fps（1s × 24fps = 24 帧，达到视频最低标准）
+ * - 帧尺寸为 256×256 缩略图（减小上传体积）
+ * - JPEG 质量为 60（缩略图够用，进一步减小体积）
  *
  * 安全设计保留：
  * - MIME 类型白名单 + 文件头魔数校验
@@ -29,7 +29,7 @@ import java.io.FileOutputStream
  * 崩溃风险评估：
  * - 1s 视频通常只有 1-2 个 I 帧，OPTION_CLOSEST_SYNC 会复用最近的关键帧
  * - 实际采到的可能是重复帧，但不会崩溃
- * - 24 帧 × 256×256 × JPEG60 ≈ 1.5MB，模型推理 token 量可控
+ * - 24 帧 × 256×256 × JPEG60 ≈ 1.5MB，云端上传体积可控
  */
 object VideoFrameExtractor {
   private const val TAG = "VideoFrameExtractor"
@@ -140,7 +140,7 @@ object VideoFrameExtractor {
         var scaled: Bitmap? = null
         try {
           // v3.2: 缩放至 256×256 缩略图（原 1024 宽）
-          // 缩略图用于模型理解，256×256 足够 Qwen3.5-VL 识别内容
+          // 缩略图用于模型理解，256×256 足够 GPT-4o 识别内容
           scaled = if (bitmap.width != THUMBNAIL_SIZE || bitmap.height != THUMBNAIL_SIZE) {
             Bitmap.createScaledBitmap(bitmap, THUMBNAIL_SIZE, THUMBNAIL_SIZE, true)
           } else bitmap

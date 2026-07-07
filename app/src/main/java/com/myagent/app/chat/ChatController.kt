@@ -1,22 +1,19 @@
 package com.myagent.app.chat
 
 import android.content.ContentResolver
-import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.os.Environment
-import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Base64
 import android.util.Log
 import androidx.core.content.FileProvider
+import com.myagent.app.cloud.CloudChatMessage
+import com.myagent.app.cloud.CloudInferenceClient
 import com.myagent.app.memory.MemoryManager
-import com.myagent.app.model.LocalModelLoader
 import com.myagent.app.model.PersonaManager
 import com.myagent.app.multimodal.KeyFrameStore
-import com.myagent.app.multimodal.MultiModalDispatcher
 import com.myagent.app.multimodal.VideoFrameExtractor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -33,13 +30,24 @@ import java.io.FileOutputStream
 import java.util.UUID
 
 /**
- * 聊天控制器 — 协调 LocalModelLoader、MemoryManager、MultiModalDispatcher。
+ * 聊天控制器 — 协调 CloudInferenceClient、MemoryManager、KeyFrameStore。
  *
- * v3.0 移除人格框架：原始记忆由 PersonaManager 单例提供，不再注入。
+ * v4.0 架构转向云端 API：
+ * - 对话（含图片理解）→ GPT-4o 流式
+ * - 图片生成           → DALL-E 3
+ * - 视频合成           → 可灵 Kling
+ *
+ * 模型在对话中通过标记触发媒体生成：
+ *   [GEN_IMAGE]\n{图片描述 prompt}\n[/GEN_IMAGE]
+ *   [EDIT_IMAGE]\n{编辑描述 prompt}\n[/EDIT_IMAGE]
+ *   [GEN_VIDEO]\n{视频描述 prompt}\n[/GEN_VIDEO]
+ *
+ * 应用解析标记 → 调用对应云端 API → 插入媒体消息。
+ * GPT-4o 负责"理解+翻译为生成 prompt"，DALL-E 3/Kling 负责"渲染"。
  */
 class ChatController(
   private val scope: CoroutineScope,
-  private val modelLoader: LocalModelLoader,
+  private val cloudClient: CloudInferenceClient,
   private val memoryManager: MemoryManager,
   private val cacheDir: File,
   private val contentResolver: ContentResolver,
@@ -47,6 +55,7 @@ class ChatController(
 ) {
   companion object {
     private const val TAG = "ChatController"
+    private const val HISTORY_LIMIT = 10  // 传给云端 API 的历史消息条数上限
   }
 
   private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
@@ -64,105 +73,60 @@ class ChatController(
   private var currentStreamJob: Job? = null
   private var currentAssistantId: String? = null
 
-  // v3.2 编辑模式：缓存最近一次生成的 SVG，供 EDIT_IMAGE 引用
+  // 编辑模式：缓存最近一次生成的图片本地路径，供 EDIT_IMAGE 引用
   @Volatile
-  private var lastGeneratedSvg: String? = null
+  private var lastGeneratedImagePath: String? = null
 
-  // ── 多模态标记解析 ──
-  //
-  // v3.2 架构重构：模型输出 SVG 代码块，而非主题词。
-  // 标记格式：
-  //   [GEN_IMAGE]\n<svg>...</svg>\n[/GEN_IMAGE]
-  //   [GEN_VIDEO frames="24"]\n<frame>...</frame>...\n[/GEN_VIDEO]
-  //   [EDIT_IMAGE]\n<svg>...</svg>\n[/EDIT_IMAGE]
-  //
-  // 应用解析标记 → 提取 SVG → StructuredRenderer 渲染。
-  // 渲染失败时（SVG 非法）降级为文字错误提示。
-
+  // ── 媒体生成标记解析 ──
   private val genImageBlock = Regex("""\[GEN_IMAGE]\s*(.*?)\s*\[/GEN_IMAGE]""", RegexOption.DOT_MATCHES_ALL)
   private val genVideoBlock = Regex("""\[GEN_VIDEO[^\]]*]\s*(.*?)\s*\[/GEN_VIDEO]""", RegexOption.DOT_MATCHES_ALL)
   private val editImageBlock = Regex("""\[EDIT_IMAGE]\s*(.*?)\s*\[/EDIT_IMAGE]""", RegexOption.DOT_MATCHES_ALL)
 
   private data class GenAction(
     val type: String,         // "image" | "video" | "edit"
-    val svg: String,          // 图片 SVG（image/edit 用）
-    val frames: List<String>, // 视频 SVG 帧列表（video 用）
+    val prompt: String,       // 媒体生成 prompt（送入 DALL-E 3 / Kling）
     val description: String,  // 模型在标记外的说明文字
   )
 
   /**
-   * 解析多模态标记，返回 (干净文字, 动作)。
+   * 解析媒体生成标记，返回 (干净文字, 动作)。
    * 动作为 null 表示纯文本回复。
    */
   private fun parseMultimodalTag(text: String): Pair<String, GenAction?> {
-    // 优先匹配 EDIT_IMAGE（编辑模式）
     editImageBlock.find(text)?.let { match ->
-      val svg = match.groupValues[1].trim()
+      val prompt = match.groupValues[1].trim()
       val clean = text.removeRange(match.range).trim()
-      return clean to GenAction("edit", svg = svg, frames = emptyList(), description = clean)
+      if (prompt.isEmpty()) return clean to null
+      return clean to GenAction("edit", prompt = prompt, description = clean)
     }
-
-    // GEN_IMAGE
     genImageBlock.find(text)?.let { match ->
-      val svg = extractSvg(match.groupValues[1])
+      val prompt = match.groupValues[1].trim()
       val clean = text.removeRange(match.range).trim()
-      if (svg.isEmpty()) {
-        return clean to null
-      }
-      return clean to GenAction("image", svg = svg, frames = emptyList(), description = clean)
+      if (prompt.isEmpty()) return clean to null
+      return clean to GenAction("image", prompt = prompt, description = clean)
     }
-
-    // GEN_VIDEO
     genVideoBlock.find(text)?.let { match ->
-      val frames = extractVideoFrames(match.groupValues[1])
+      val prompt = match.groupValues[1].trim()
       val clean = text.removeRange(match.range).trim()
-      if (frames.isEmpty()) {
-        return clean to null
-      }
-      return clean to GenAction("video", svg = "", frames = frames, description = clean)
+      if (prompt.isEmpty()) return clean to null
+      return clean to GenAction("video", prompt = prompt, description = clean)
     }
-
     return text to null
-  }
-
-  /** 从文本中提取第一个 <svg>...</svg> 块 */
-  private fun extractSvg(text: String): String {
-    val svgRegex = Regex("""<svg[\s\S]*?</svg>""", RegexOption.IGNORE_CASE)
-    return svgRegex.find(text)?.value?.trim() ?: ""
-  }
-
-  /** 从视频标记内容中提取所有 <frame>...</frame> 内的 SVG */
-  private fun extractVideoFrames(text: String): List<String> {
-    val frameRegex = Regex("""<frame[^>]*>([\s\S]*?)</frame>""", RegexOption.IGNORE_CASE)
-    return frameRegex.findAll(text).map { match ->
-      extractSvg(match.groupValues[1])
-    }.filter { it.isNotEmpty() }.toList()
   }
 
   /** 判断用户是否请求编辑已生成的图片 */
   private fun isEditRequest(text: String): Boolean {
     val lower = text.lowercase()
     val keywords = listOf("编辑", "修改", "替换", "去掉", "换成", "改成", "调整", "edit", "modify", "replace", "remove")
-    return keywords.any { it in lower } && lastGeneratedSvg != null
-  }
-
-  /** 判断用户是否请求生成图片/视频（用于动态调整 maxTokens） */
-  private fun isGenerationRequest(text: String): Boolean {
-    val lower = text.lowercase()
-    val genKeywords = listOf(
-      "画", "生成", "做", "绘制", "设计", "create", "generate", "draw", "make", "design",
-      "动画", "视频", "video", "animation",
-    )
-    val editKeywords = listOf("编辑", "修改", "替换", "edit", "modify", "replace")
-    return genKeywords.any { it in lower } || editKeywords.any { it in lower }
+    return keywords.any { it in lower } && lastGeneratedImagePath != null
   }
 
   // ── URI → 文件路径 ──
 
   /**
    * 将 content:// URI 复制到缓存目录，压缩后返回绝对文件路径。
-   * 图片传给 llama.cpp mtmd 需要绝对路径（mtmd_helper_bitmap_init_from_file）。
-   * 压缩至最大 1024x1024，JPEG 质量 80%，避免 Qwen3.5 视觉编码器处理失败。
+   * 图片传给云端 API 需要本地路径（GPT-4o Vision 转 data URI / DALL-E 不需要）。
+   * 压缩至最大 1024x1024，JPEG 质量 80%，避免上传过大。
    * 限制单张图片最大 50MB，防止 OOM。
    */
   private fun resolveImagePath(uri: Uri): String? {
@@ -177,7 +141,6 @@ class ChatController(
         return null
       }
 
-      // 先复制到临时文件
       val tmpFile = File(cacheDir, "img_raw_${UUID.randomUUID()}")
       try {
         contentResolver.openInputStream(uri)?.use { input ->
@@ -218,7 +181,6 @@ class ChatController(
       if (srcW <= 0 || srcH <= 0) return null
 
       val maxDim = 1024
-      // inSampleSize 必须是 2 的幂，取不小于所需缩放倍数的 2 的幂
       val sampleSize = if (srcW > maxDim || srcH > maxDim) {
         var s = 1
         val scale = maxOf(srcW.toFloat() / maxDim, srcH.toFloat() / maxDim)
@@ -229,7 +191,6 @@ class ChatController(
       val opts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
       val bitmap = BitmapFactory.decodeFile(inputPath, opts) ?: return null
 
-      // 如果解码后尺寸仍超过 1024，再等比缩放
       val finalBitmap = if (bitmap.width > maxDim || bitmap.height > maxDim) {
         val ratio = minOf(maxDim.toFloat() / bitmap.width, maxDim.toFloat() / bitmap.height)
         Bitmap.createScaledBitmap(
@@ -244,7 +205,6 @@ class ChatController(
       FileOutputStream(outFile).use { out ->
         finalBitmap.compress(Bitmap.CompressFormat.JPEG, 80, out)
       }
-      // 保存尺寸信息后再回收，避免访问已回收 Bitmap 的属性
       val fw = finalBitmap.width
       val fh = finalBitmap.height
       if (finalBitmap != bitmap) finalBitmap.recycle() else bitmap.recycle()
@@ -304,7 +264,6 @@ class ChatController(
     )
     _messages.update { it + userMessage }
 
-    // M-7: 转发图片附件到推理（base64 → 临时文件），避免静默丢弃
     val attachmentImagePaths = attachments.mapNotNull { att ->
       if (att.type == "image" || att.mimeType.startsWith("image/", ignoreCase = true)) {
         decodeAttachmentToTempFile(att)
@@ -339,14 +298,12 @@ class ChatController(
     currentStreamJob?.cancel()
     _errorText.value = null
     _isLoading.value = true
-    // streamingText 保持 null，直到首 token 到达才设置，避免空字符串导致三个气泡同时出现
 
     currentStreamJob = scope.launch {
       try {
         val systemPrompt = PersonaManager.getSystemPrompt()
         val memoryContext = memoryManager.getFullContext()
 
-        // system 段：人格 + 记忆（为空则 LlamaEngine 省略 system 段）
         val systemBlock = buildString {
           append(systemPrompt)
           if (memoryContext.isNotEmpty()) {
@@ -355,7 +312,7 @@ class ChatController(
           }
         }
 
-        // 多模态推理前校验图片有效性，避免损坏图片导致原生崩溃
+        // 多模态推理前校验图片有效性
         val validPaths = if (imagePaths.isNotEmpty()) {
           imagePaths.filter { path ->
             val file = File(path)
@@ -363,8 +320,6 @@ class ChatController(
               Log.w(TAG, "Skipping invalid image: $path")
               false
             } else {
-              // 预解码校验：BitmapFactory 解码失败则说明图片损坏/格式不支持，
-              // 避免传入 llama.cpp mtmd 原生层触发 SIGSEGV
               try {
                 val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(path, opts)
@@ -385,38 +340,33 @@ class ChatController(
           return@launch
         }
 
-        // 流式推理 — 有图片时走多模态路径
-        // Qwen chat template 由 LlamaEngine 统一构造，这里只传语义内容
         val assistantId = UUID.randomUUID().toString()
         currentAssistantId = assistantId
-        // 延迟添加助手消息：只有首 token 到达后才插入，避免 cancel 时残留空气泡
         var assistantAdded = false
 
-        // v3.2 编辑模式：若用户请求编辑且有缓存 SVG，把原 SVG 作为上下文注入 prompt
-        val effectivePrompt = if (isEditRequest(promptText) && lastGeneratedSvg != null) {
+        // 编辑模式：若用户请求编辑且有缓存图片，把编辑上下文注入 prompt
+        val effectivePrompt = if (isEditRequest(promptText) && lastGeneratedImagePath != null) {
           buildString {
             append(promptText)
-            append("\n\n[参考SVG — 请基于此修改]\n")
-            append(lastGeneratedSvg)
+            append("\n\n[参考：上一次生成的图片路径 — ")
+            append(lastGeneratedImagePath)
+            append("，请基于此图片生成 EDIT_IMAGE 标记描述编辑后的画面]")
           }
         } else {
           promptText
         }
 
-        // v3.2：SVG 输出需要更大 token 空间，图片/视频生成时用 2048
-        val isGenRequest = isGenerationRequest(promptText)
-        val maxTokens = if (isGenRequest) 2048 else 512
+        // 构造云端对话历史：UI 消息 → CloudChatMessage
+        val history = _messages.value
+          .filter { it.content.isNotBlank() }
+          .takeLast(HISTORY_LIMIT)
+          .map { CloudChatMessage(role = it.role, content = it.content) }
+        val currentMessages = history + CloudChatMessage(role = "user", content = effectivePrompt)
 
         val fullResponse = StringBuilder()
-        val inferenceFlow = if (validPaths.isNotEmpty()) {
-          Log.i(TAG, "Multimodal inference: text + ${validPaths.size} image(s), maxTokens=$maxTokens")
-          modelLoader.generateWithImages(systemBlock, effectivePrompt, validPaths, maxTokens)
-        } else {
-          Log.i(TAG, "Text inference: maxTokens=$maxTokens")
-          modelLoader.generate(systemBlock, effectivePrompt, maxTokens)
-        }
+        Log.i(TAG, "Cloud inference: text + ${validPaths.size} image(s), history=${history.size}")
+        val inferenceFlow = cloudClient.chat(systemBlock, currentMessages, validPaths)
 
-        // 流式输出节流：每 50ms 最多更新一次 StateFlow
         var lastStreamUpdate = 0L
         var isFirstToken = true
         inferenceFlow.collect { chunk ->
@@ -432,12 +382,10 @@ class ChatController(
             isFirstToken = false
           }
         }
-        // 确保最终文本被刷新
         _streamingText.value = fullResponse.toString()
 
         val rawContent = fullResponse.toString()
 
-        // 如果推理无任何输出，添加错误消息
         if (!assistantAdded) {
           _messages.update { it + ChatMessage(
             id = assistantId, role = "assistant",
@@ -447,15 +395,12 @@ class ChatController(
           return@launch
         }
 
-        // 解析多模态意图标记
         val (cleanContent, genAction) = parseMultimodalTag(rawContent)
 
-        // 更新文字消息（去掉标记）
         _messages.update { list ->
           list.map { if (it.id == assistantId) it.copy(content = cleanContent) else it }
         }
 
-        // 保存助手回复到记忆
         val cleaned = cleanContent.trim()
         if (cleaned.isNotEmpty() && !isLoopOutput(cleaned)) {
           memoryManager.saveMemory(role = "assistant", content = cleaned)
@@ -464,7 +409,6 @@ class ChatController(
         _streamingText.value = null
         _isLoading.value = false
 
-        // 多模态生成
         if (genAction != null) {
           dispatchGeneration(genAction)
         }
@@ -480,16 +424,13 @@ class ChatController(
         _streamingText.value = null
         _isLoading.value = false
       } catch (t: Throwable) {
-        // 兜底：捕获原生层异常（如 llama.cpp 的 SIGSEGV 被转换为 Java 异常）
         Log.e(TAG, "Fatal inference error: ${t.javaClass.name} — ${t.message}")
-        _errorText.value = "模型推理遇到严重错误，请重启应用"
+        _errorText.value = "推理遇到严重错误，请重试"
         _streamingText.value = null
         _isLoading.value = false
       } finally {
-        // M-6: 确保所有路径（含外部取消）都复位加载/流式状态
         _streamingText.value = null
         _isLoading.value = false
-        // M-5: 清除 assistantId 并移除残留的空助手气泡
         val aid = currentAssistantId
         currentAssistantId = null
         if (aid != null) {
@@ -500,91 +441,127 @@ class ChatController(
   }
 
   /**
-   * 调度多模态生成 — v3.2 重构。
+   * 调度媒体生成 — v4.0 云端 API。
    *
-   * 模型已输出 SVG 代码，本方法将其交给 StructuredRenderer 渲染。
-   * 渲染失败时（SVG 非法）降级为文字错误提示。
+   * - image/edit：调 DALL-E 3 生成图片
+   * - video：调可灵 Kling 合成视频（关键帧来自 KeyFrameStore）
    */
   private suspend fun dispatchGeneration(action: GenAction) {
     when (action.type) {
-      "image", "edit" -> {
-        try {
-          val bitmap = MultiModalDispatcher.renderSvgImage(action.svg)
-          try {
-            val imagesDir = File(cacheDir, "images").also { it.mkdirs() }
-            val file = File(imagesDir, "gen_${UUID.randomUUID()}.png")
-            val ok = FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-            if (!ok || file.length() == 0L) {
-              throw Exception("图片写入失败，可能是磁盘空间不足")
+      "image", "edit" -> dispatchImage(action)
+      "video" -> dispatchVideo(action)
+    }
+  }
+
+  /** 调 DALL-E 3 生成图片，插入图片消息 */
+  private suspend fun dispatchImage(action: GenAction) {
+    val progressId = UUID.randomUUID().toString()
+    _messages.update {
+      it + ChatMessage(id = progressId, role = "assistant", content = "正在生成图片…")
+    }
+    try {
+      // 编辑模式：把原图片描述融入新 prompt
+      val finalPrompt = if (action.type == "edit" && lastGeneratedImagePath != null) {
+        // DALL-E 3 不支持图片输入编辑，只能基于文字描述重新生成
+        action.prompt
+      } else {
+        action.prompt
+      }
+
+      val imagePath = withContext(Dispatchers.IO) {
+        cloudClient.generateImage(finalPrompt)
+      }
+      if (imagePath == null) {
+        _messages.update { list ->
+          list.map { m -> if (m.id == progressId) m.copy(content = "图片生成失败，请检查 API 配置后重试") else m }
+        }
+        return
+      }
+
+      val file = File(imagePath)
+      val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+      Log.i(TAG, "DALL-E 3 image saved: ${file.absolutePath} (${file.length() / 1024}KB)")
+
+      // 缓存最近生成图片路径，供编辑模式引用
+      lastGeneratedImagePath = imagePath
+
+      val imageMsg = ChatMessage(
+        id = UUID.randomUUID().toString(),
+        role = "assistant",
+        content = action.description.ifEmpty { "已生成图片" },
+        type = "image",
+        attachmentUri = uri.toString(),
+        attachmentMimeType = "image/png",
+        localPath = file.absolutePath,
+      )
+      _messages.update { list -> list.map { m -> if (m.id == progressId) imageMsg else m } }
+    } catch (e: Exception) {
+      Log.e(TAG, "Image generation failed: ${e.message}", e)
+      _messages.update { list ->
+        list.map { m -> if (m.id == progressId) m.copy(content = "图片生成失败: ${e.message}") else m }
+      }
+    }
+  }
+
+  /** 调可灵 Kling 合成视频，插入视频消息 */
+  private suspend fun dispatchVideo(action: GenAction) {
+    val progressId = UUID.randomUUID().toString()
+    _messages.update {
+      it + ChatMessage(id = progressId, role = "assistant", content = "正在合成视频…")
+    }
+    try {
+      // 优先用 KeyFrameStore 缓存的关键帧做图生视频；无缓存则文生视频
+      val keyFrameUris = KeyFrameStore.keyFrames.value
+      val keyFramePaths = if (keyFrameUris.isNotEmpty()) {
+        keyFrameUris.mapNotNull { withContext(Dispatchers.IO) { resolveImagePath(it) } }
+      } else emptyList()
+
+      val videoPath = if (keyFramePaths.isNotEmpty()) {
+        cloudClient.imageToVideo(keyFramePaths, action.prompt, duration = 5) { progress ->
+          _messages.update { list ->
+            list.map { m ->
+              if (m.id == progressId) m.copy(content = "正在合成视频… $progress%") else m
             }
-            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-            Log.i(TAG, "Rendered image saved: ${file.absolutePath} (${file.length() / 1024}KB)")
-
-            // 缓存最近生成的 SVG，供编辑模式引用
-            lastGeneratedSvg = action.svg
-
-            val imageMsg = ChatMessage(
-              id = UUID.randomUUID().toString(),
-              role = "assistant",
-              content = action.description.ifEmpty { "已生成图片" },
-              type = "image",
-              attachmentUri = uri.toString(),
-              attachmentMimeType = "image/png",
-              localPath = file.absolutePath,
-            )
-            _messages.update { it + imageMsg }
-          } finally {
-            bitmap.recycle()
           }
-        } catch (e: Exception) {
-          Log.e(TAG, "Image rendering failed: ${e.message}", e)
-          _errorText.value = "图片渲染失败: ${e.message}"
+        }
+      } else {
+        cloudClient.textToVideo(action.prompt, duration = 5) { progress ->
+          _messages.update { list ->
+            list.map { m ->
+              if (m.id == progressId) m.copy(content = "正在合成视频… $progress%") else m
+            }
+          }
         }
       }
-      "video" -> {
-        val progressId = UUID.randomUUID().toString()
-        val progressMsg = ChatMessage(
-          id = progressId,
-          role = "assistant",
-          content = "正在渲染视频（${action.frames.size} 帧），请稍候...",
-        )
-        _messages.update { it + progressMsg }
-        try {
-          if (action.frames.isEmpty()) {
-            throw Exception("视频帧为空，模型未输出有效 SVG")
-          }
-          val videoFile = MultiModalDispatcher.renderSvgVideo(action.frames) { progress ->
-            val pct = (progress * 100).toInt()
-            _messages.update { list ->
-              list.map { m ->
-                if (m.id == progressId) m.copy(content = "正在渲染视频（${action.frames.size} 帧）... $pct%") else m
-              }
-            }
-          }
-          if (videoFile.length() == 0L) {
-            throw Exception("视频文件为空，渲染可能失败")
-          }
-          if (videoFile.length() < 1024) {
-            throw Exception("视频文件过小，可能已损坏")
-          }
-          val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", videoFile)
-          Log.i(TAG, "Rendered video saved: ${videoFile.absolutePath} (${videoFile.length() / 1024}KB)")
-          val videoMsg = ChatMessage(
-            id = UUID.randomUUID().toString(),
-            role = "assistant",
-            content = action.description.ifEmpty { "已生成视频" },
-            type = "video",
-            attachmentUri = uri.toString(),
-            attachmentMimeType = "video/mp4",
-            localPath = videoFile.absolutePath,
-          )
-          _messages.update { it.map { m -> if (m.id == progressId) videoMsg else m } }
-        } catch (e: Exception) {
-          Log.e(TAG, "Video rendering failed: ${e.message}", e)
-          _messages.update { it.map { m ->
-            if (m.id == progressId) m.copy(content = "视频渲染失败: ${e.message}") else m
-          } }
+
+      if (videoPath == null) {
+        _messages.update { list ->
+          list.map { m -> if (m.id == progressId) m.copy(content = "视频合成失败，请检查 API 配置后重试") else m }
         }
+        return
+      }
+
+      val file = File(videoPath)
+      if (file.length() < 1024) {
+        throw Exception("视频文件过小，可能已损坏")
+      }
+      val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+      Log.i(TAG, "Kling video saved: ${file.absolutePath} (${file.length() / 1024}KB)")
+
+      val videoMsg = ChatMessage(
+        id = UUID.randomUUID().toString(),
+        role = "assistant",
+        content = action.description.ifEmpty { "已生成视频" },
+        type = "video",
+        attachmentUri = uri.toString(),
+        attachmentMimeType = "video/mp4",
+        localPath = file.absolutePath,
+      )
+      _messages.update { list -> list.map { m -> if (m.id == progressId) videoMsg else m } }
+    } catch (e: Exception) {
+      Log.e(TAG, "Video generation failed: ${e.message}", e)
+      _messages.update { list ->
+        list.map { m -> if (m.id == progressId) m.copy(content = "视频合成失败: ${e.message}") else m }
       }
     }
   }
@@ -596,12 +573,7 @@ class ChatController(
   /**
    * 多图输入 — 用户可一次发送 ≤10 张图片，作为多模态上下文一起推理。
    *
-   * 典型用法：
-   * - 多角度拍摄同一物体 → LLM 综合理解
-   * - 用户手动挑选视频关键帧 → 比系统采样更可控
-   * - 前后对比图 → 变化检测
-   *
-   * Qwen3.5-VL 原生支持多图输入，所有图片路径一起传入 [imagePaths]。
+   * GPT-4o Vision 原生支持多图输入，所有图片路径一起传入。
    */
   fun sendImages(imageUris: List<String>, caption: String = "") {
     if (imageUris.isEmpty()) return
@@ -617,7 +589,6 @@ class ChatController(
     )
     _messages.update { it + message }
 
-    // 图片解析（文件 I/O + Bitmap 解码）放到 IO 线程，避免主线程 ANR
     scope.launch {
       try {
         val imagePaths = withContext(Dispatchers.IO) {
@@ -639,7 +610,6 @@ class ChatController(
         Log.e(TAG, "sendImages failed: ${e.message}", e)
         _errorText.value = "图片处理失败: ${e.message}"
       } catch (t: Throwable) {
-        // 兜底：捕获 BitmapFactory 等原生层异常
         Log.e(TAG, "sendImages fatal: ${t.javaClass.name} — ${t.message}")
         _errorText.value = "图片处理遇到严重错误，请尝试其他图片"
       }
@@ -647,11 +617,10 @@ class ChatController(
   }
 
   /**
-   * 视频输入 — 帧采样后作为多张图片传给 Qwen3.5。
+   * 视频输入 — 帧采样后作为多张图片传给 GPT-4o Vision。
    *
-   * llama.cpp libmtmd 当前不直接接受视频输入，采用帧采样替代方案：
-   * MediaMetadataRetriever 提取前 5 秒的关键帧（每秒 3 帧），
-   * 压缩为 JPEG 后作为 imagePaths 列表传给多模态引擎。
+   * GPT-4o 不直接接受视频，采用帧采样：
+   * MediaMetadataRetriever 提取关键帧，压缩为 JPEG 后作为 imagePaths 列表传入。
    */
   fun sendVideo(videoUri: String, caption: String = "") {
     val message = ChatMessage(
@@ -665,12 +634,10 @@ class ChatController(
 
     _errorText.value = null
 
-    // 文件大小检查 + 帧采样全部放到 IO 线程，避免主线程 ANR
     scope.launch {
       try {
         val uri = Uri.parse(videoUri)
 
-        // 视频预校验：检查 URI 是否可访问，避免 MediaMetadataRetriever 原生崩溃
         val fileSize = withContext(Dispatchers.IO) {
           try {
             VideoFrameExtractor.getFileSize(context, uri)
@@ -710,7 +677,6 @@ class ChatController(
         Log.e(TAG, "Video send failed: ${e.message}", e)
         _errorText.value = "视频处理失败: ${e.message}"
       } catch (t: Throwable) {
-        // 兜底：捕获 MediaMetadataRetriever 等原生层异常
         Log.e(TAG, "Video send fatal: ${t.javaClass.name} — ${t.message}")
         _errorText.value = "视频处理遇到严重错误，请尝试其他视频"
       }
@@ -718,10 +684,10 @@ class ChatController(
   }
 
   /**
-   * v3.3 三段式工作流：合成 MP4。
+   * v4.0 三段式工作流：合成 MP4。
    *
-   * 取 KeyFrameStore 中缓存的关键帧，送入模型生成每帧 SVG，StructuredRenderer 合成 MP4。
-   * 工作流：关键帧（图片）→ 模型理解 + 翻译为 SVG 帧序列 → 渲染合成 MP4
+   * 取 KeyFrameStore 中缓存的关键帧，直接调可灵 Kling 图生视频。
+   * 不走对话流程，避免 GPT-4o 中转（关键帧已就绪，Kling 直接接收）。
    */
   fun composeVideoFromKeyFrames() {
     val keyFrameUris = KeyFrameStore.keyFrames.value
@@ -730,39 +696,73 @@ class ChatController(
       return
     }
 
-    // 用户消息：显示合成任务
     val sourceLabel = KeyFrameStore.sourceLabel.value
-    val message = ChatMessage(
+    val userMessage = ChatMessage(
       id = UUID.randomUUID().toString(),
       role = "user",
       content = "[合成视频] 基于 $sourceLabel 的 ${keyFrameUris.size} 帧关键帧",
     )
-    _messages.update { it + message }
+    _messages.update { it + userMessage }
     _errorText.value = null
+
+    val progressId = UUID.randomUUID().toString()
+    _messages.update {
+      it + ChatMessage(id = progressId, role = "assistant", content = "正在合成视频…")
+    }
 
     scope.launch {
       try {
-        // 解析关键帧 Uri 为文件路径
         val imagePaths = keyFrameUris.mapNotNull { uri ->
           withContext(Dispatchers.IO) { resolveImagePath(uri) }
         }
         if (imagePaths.isEmpty()) {
-          _errorText.value = "关键帧解析失败，请重新选择"
+          _messages.update { list ->
+            list.map { m -> if (m.id == progressId) m.copy(content = "关键帧解析失败，请重新选择") else m }
+          }
           return@launch
         }
 
         Log.i(TAG, "Compose video: ${imagePaths.size} key frames")
         memoryManager.saveMemory(role = "user", content = "[合成视频 ${imagePaths.size}帧]")
 
-        // 送入模型：要求输出每帧 SVG，应用渲染合成 MP4
-        startInference(
-          promptText = "基于这 ${imagePaths.size} 张关键帧生成视频动画。" +
-            "请输出 [GEN_VIDEO] 标记，每一帧对应一张关键帧，保持角色和场景一致。",
-          imagePaths = imagePaths,
+        val prompt = "基于 ${imagePaths.size} 张关键帧生成流畅过渡的视频动画，保持角色和场景一致。"
+        val videoPath = cloudClient.imageToVideo(imagePaths, prompt, duration = 5) { progress ->
+          _messages.update { list ->
+            list.map { m ->
+              if (m.id == progressId) m.copy(content = "正在合成视频… $progress%") else m
+            }
+          }
+        }
+
+        if (videoPath == null) {
+          _messages.update { list ->
+            list.map { m -> if (m.id == progressId) m.copy(content = "视频合成失败，请检查 API 配置后重试") else m }
+          }
+          return@launch
+        }
+
+        val file = File(videoPath)
+        if (file.length() < 1024) {
+          throw Exception("视频文件过小，可能已损坏")
+        }
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        Log.i(TAG, "Kling video saved: ${file.absolutePath} (${file.length() / 1024}KB)")
+
+        val videoMsg = ChatMessage(
+          id = UUID.randomUUID().toString(),
+          role = "assistant",
+          content = "已合成视频（基于 ${imagePaths.size} 帧关键帧）",
+          type = "video",
+          attachmentUri = uri.toString(),
+          attachmentMimeType = "video/mp4",
+          localPath = file.absolutePath,
         )
+        _messages.update { list -> list.map { m -> if (m.id == progressId) videoMsg else m } }
       } catch (e: Exception) {
         Log.e(TAG, "Compose video failed: ${e.message}", e)
-        _errorText.value = "视频合成失败: ${e.message}"
+        _messages.update { list ->
+          list.map { m -> if (m.id == progressId) m.copy(content = "视频合成失败: ${e.message}") else m }
+        }
       }
     }
   }
@@ -772,7 +772,6 @@ class ChatController(
     currentStreamJob = null
     _streamingText.value = null
     _isLoading.value = false
-    // M-5: 清除 assistantId 并移除残留的空助手气泡
     val aid = currentAssistantId
     currentAssistantId = null
     if (aid != null) {

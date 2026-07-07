@@ -76,11 +76,11 @@ import java.io.File
 /**
  * 多模态输入栏 — 三段式工作流入口。
  *
- * v3.4 工作流：帧 / 图形 / 合成
+ * v4.0 云端工作流：帧 / 图形 / 合成
  *
  *   帧   ─→ 1s 视频 → 24 帧关键帧 → 保存相册 + 进缓存
- *   图形 ─→ 元素替换对话框（用户元素+原图元素+关键帧）→ 改造后 SVG 进缓存
- *   合成 ─→ 取缓存关键帧 → 逐帧渲染 → MediaCodec → MP4
+ *   图形 ─→ 元素替换对话框（用户元素+原图元素+关键帧）→ 改造后图片进缓存
+ *   合成 ─→ 取缓存关键帧 → 可灵 Kling 图生视频 → MP4
  *
  * 三段式通过 KeyFrameStore 单例传递关键帧状态。
  */
@@ -194,7 +194,7 @@ fun ChatInputBar(
         SheetOption(
           icon = Icons.Default.Image,
           label = "图形",
-          description = "元素替换对话框，改造关键帧输出 SVG（当前缓存 ${cachedKeyFrames.size} 帧）",
+          description = "元素替换对话框，改造关键帧输出图片（当前缓存 ${cachedKeyFrames.size} 帧）",
           onClick = { launchAfterSheetClose { showImageDialog = true } },
         )
         // 合成：关键帧 → MP4
@@ -577,7 +577,7 @@ private fun saveBitmapToGallery(context: Context, file: File, displayName: Strin
  * - 右侧入口：关键帧（4-12张）
  *
  * 提交后：
- * - 用户元素 + 原图元素 → 模型执行替换 → 输出改造后的关键帧 SVG → 进缓存
+ * - 用户元素 + 原图元素 → 模型执行替换 → 输出改造后的关键帧图片 → 进缓存
  */
 @Composable
 private fun ImageCompositeDialog(
@@ -712,7 +712,7 @@ private fun ImageCompositeDialog(
 
         Text(
           text = "选择用户元素和原图元素，系统将替换关键帧中的对应元素，" +
-            "输出改造后的 SVG 关键帧进入缓存，供「合成」生成 MP4。",
+            "输出改造后的关键帧图片进入缓存，供「合成」生成 MP4。",
           style = MaterialTheme.typography.bodySmall,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
           fontSize = 12.sp,

@@ -2,7 +2,6 @@ package com.myagent.app.ui
 
 import com.myagent.app.AppearanceThemeMode
 import com.myagent.app.MainViewModel
-import com.myagent.app.model.ModelDownloadState
 import com.myagent.app.multimodal.VideoConfig
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
@@ -17,7 +16,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Videocam
@@ -46,7 +44,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 /**
- * 设置页面 — v2.0 仪式感人格 + 视频画质设置。
+ * 设置页面 — v4.0 云端架构 + 仪式感人格 + 视频画质设置。
  *
  * 拆分为独立的 Section 组件，每个弹窗独立管理状态。
  */
@@ -56,7 +54,6 @@ fun SettingsScreen(
   modifier: Modifier = Modifier,
 ) {
   val appearanceMode by viewModel.appearanceThemeMode.collectAsState()
-  val downloadState by viewModel.downloadState.collectAsState()
   val videoConfig by viewModel.videoConfig.collectAsState()
   var showAppearanceDialog by remember { mutableStateOf(false) }
   var showVideoDialog by remember { mutableStateOf(false) }
@@ -90,7 +87,7 @@ fun SettingsScreen(
     SettingsRow(
       icon = Icons.Default.Info,
       title = "关于 Memento",
-      subtitle = "版本 2.0.0",
+      subtitle = "版本 4.0.0",
       onClick = { showAboutDialog = true },
     )
 
@@ -120,16 +117,10 @@ fun SettingsScreen(
 
     HorizontalDivider()
 
-    // ── 模型下载 ──
-    DownloadSection(
-      state = downloadState,
-      onStartDownload = { viewModel.resetModelDownload() },
-    )
-
     Spacer(modifier = Modifier.height(32.dp))
 
     Text(
-      text = "Memento v3.1",
+      text = "Memento v4.0",
       style = MaterialTheme.typography.bodySmall,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -301,18 +292,18 @@ private fun AboutDialog(
     text = {
       Column {
         Text(
-          text = "Memento v3.1.0",
+          text = "Memento v4.0.0",
           style = MaterialTheme.typography.titleMedium,
         )
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-          text = "你的 AI 搭子，永远在线。",
+          text = "你的 AI 搭子，由云端模型驱动。",
           style = MaterialTheme.typography.bodyMedium,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(modifier = Modifier.height(16.dp))
         Text(
-          text = "基于 llama.cpp + libmtmd 引擎，Qwen3.5 端侧推理，数据不出设备。",
+          text = "由 GPT-4o（对话+图片理解）、DALL-E 3（图片生成）、可灵 Kling（视频生成）驱动。",
           style = MaterialTheme.typography.bodySmall,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -483,52 +474,4 @@ private fun SelectableRow(
       }
     }
   }
-}
-
-// ── 模型下载区域 ──
-
-@Composable
-private fun DownloadSection(
-  state: ModelDownloadState,
-  onStartDownload: () -> Unit,
-) {
-  val isDownloading = state is ModelDownloadState.Downloading || state is ModelDownloadState.Verifying
-  val isCompleted = state is ModelDownloadState.Completed
-
-  Row(
-    modifier = Modifier
-      .fillMaxWidth()
-      .padding(vertical = 12.dp, horizontal = 4.dp),
-    verticalAlignment = Alignment.CenterVertically,
-  ) {
-    Icon(
-      imageVector = Icons.Default.Download,
-      contentDescription = null,
-      tint = if (isCompleted) Color(0xFF4ECDC4) else MaterialTheme.colorScheme.primary,
-    )
-    Spacer(modifier = Modifier.width(16.dp))
-    Column(modifier = Modifier.weight(1f)) {
-      Text(text = "AI 模型", style = MaterialTheme.typography.bodyLarge)
-      Text(
-        text = when {
-          isCompleted -> "模型已就绪"
-          isDownloading -> "正在下载..."
-          state is ModelDownloadState.Failed -> "下载失败，点击下载"
-          state is ModelDownloadState.Idle -> "未下载，点击下载"
-          else -> "未下载，点击下载"
-        },
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-      )
-    }
-    if (!isDownloading && !isCompleted) {
-      Button(
-        onClick = onStartDownload,
-        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4ECDC4)),
-      ) {
-        Text("下载")
-      }
-    }
-  }
-  HorizontalDivider()
 }
