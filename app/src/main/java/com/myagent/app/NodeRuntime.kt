@@ -264,6 +264,15 @@ class NodeRuntime(
     chatController.sendVideo(videoUri, caption)
   }
 
+  /**
+   * v3.3 三段式工作流：合成 MP4。
+   *
+   * 取 KeyFrameStore 中缓存的关键帧，调用 ChatController 合成视频。
+   */
+  fun composeVideoFromKeyFrames() {
+    chatController.composeVideoFromKeyFrames()
+  }
+
   fun abortChat() {
     chatController.abort()
   }

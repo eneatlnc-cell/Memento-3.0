@@ -169,6 +169,7 @@ fun ChatScreen(
       onSendText = { text -> viewModel.sendChat(text) },
       onSendImages = { uris, caption -> viewModel.sendImages(uris, caption) },
       onSendVideo = { uri, caption -> viewModel.sendVideo(uri, caption) },
+      onComposeVideo = { viewModel.composeVideoFromKeyFrames() },
       onAbort = { viewModel.abortChat() },
     )
   }

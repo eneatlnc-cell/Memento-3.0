@@ -15,6 +15,7 @@ import androidx.core.content.FileProvider
 import com.myagent.app.memory.MemoryManager
 import com.myagent.app.model.LocalModelLoader
 import com.myagent.app.model.PersonaManager
+import com.myagent.app.multimodal.KeyFrameStore
 import com.myagent.app.multimodal.MultiModalDispatcher
 import com.myagent.app.multimodal.VideoFrameExtractor
 import kotlinx.coroutines.CancellationException
@@ -712,6 +713,56 @@ class ChatController(
         // 兜底：捕获 MediaMetadataRetriever 等原生层异常
         Log.e(TAG, "Video send fatal: ${t.javaClass.name} — ${t.message}")
         _errorText.value = "视频处理遇到严重错误，请尝试其他视频"
+      }
+    }
+  }
+
+  /**
+   * v3.3 三段式工作流：合成 MP4。
+   *
+   * 取 KeyFrameStore 中缓存的关键帧，送入模型生成每帧 SVG，StructuredRenderer 合成 MP4。
+   * 工作流：关键帧（图片）→ 模型理解 + 翻译为 SVG 帧序列 → 渲染合成 MP4
+   */
+  fun composeVideoFromKeyFrames() {
+    val keyFrameUris = KeyFrameStore.keyFrames.value
+    if (keyFrameUris.isEmpty()) {
+      _errorText.value = "缓存中没有关键帧，请先在「图形」或「帧」中准备"
+      return
+    }
+
+    // 用户消息：显示合成任务
+    val sourceLabel = KeyFrameStore.sourceLabel.value
+    val message = ChatMessage(
+      id = UUID.randomUUID().toString(),
+      role = "user",
+      content = "[合成视频] 基于 $sourceLabel 的 ${keyFrameUris.size} 帧关键帧",
+    )
+    _messages.update { it + message }
+    _errorText.value = null
+
+    scope.launch {
+      try {
+        // 解析关键帧 Uri 为文件路径
+        val imagePaths = keyFrameUris.mapNotNull { uri ->
+          withContext(Dispatchers.IO) { resolveImagePath(uri) }
+        }
+        if (imagePaths.isEmpty()) {
+          _errorText.value = "关键帧解析失败，请重新选择"
+          return@launch
+        }
+
+        Log.i(TAG, "Compose video: ${imagePaths.size} key frames")
+        memoryManager.saveMemory(role = "user", content = "[合成视频 ${imagePaths.size}帧]")
+
+        // 送入模型：要求输出每帧 SVG，应用渲染合成 MP4
+        startInference(
+          promptText = "基于这 ${imagePaths.size} 张关键帧生成视频动画。" +
+            "请输出 [GEN_VIDEO] 标记，每一帧对应一张关键帧，保持角色和场景一致。",
+          imagePaths = imagePaths,
+        )
+      } catch (e: Exception) {
+        Log.e(TAG, "Compose video failed: ${e.message}", e)
+        _errorText.value = "视频合成失败: ${e.message}"
       }
     }
   }

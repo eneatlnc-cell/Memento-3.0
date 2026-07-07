@@ -286,4 +286,18 @@ class MainViewModel(
   // --- 多模态操作 ---
   // v3.2：多模态生成已迁移到 ChatController + StructuredRenderer
   // 模型输出 SVG → StructuredRenderer 渲染，不再需要 MainViewModel 手动调度
+
+  /**
+   * v3.3 三段式工作流：合成 MP4。
+   *
+   * 取 KeyFrameStore 中缓存的关键帧，调用 ChatController 触发视频合成。
+   * 关键帧会作为图片输入送入模型，模型输出每帧的 SVG，StructuredRenderer 渲染合成。
+   */
+  fun composeVideoFromKeyFrames() {
+    val runtime = runtimeRef.value ?: run {
+      pendingActions.add { runtimeRef.value?.composeVideoFromKeyFrames() }
+      return
+    }
+    runtime.composeVideoFromKeyFrames()
+  }
 }
