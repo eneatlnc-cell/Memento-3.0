@@ -160,10 +160,9 @@ class LlamaEngine(private val context: Context) {
           // 主模型（文本推理）：永远 CPU-only。0.8B 模型在 4 核 ARM 上
           // 可达 15-20 token/s，GPU/NPU 的额外加速不明显（<2x），
           // 但 GPU 持续运行会导致手机严重发热。
-          // mmproj（图像编码）：骁龙 8 NPU 设备上启用 GPU 加速。
-          // 图像编码是一次性短时操作（0.5-2s），编码完成后 GPU 闲置，
-          // 不会持续加热。非骁龙 8 设备用 CPU 编码。
-          val mtmdUseGpu = caps.canUseNpu  // mmproj：按需启用
+          // mmproj（图像编码）：诊断阶段强制 CPU，排除 NPU 初始化卡死。
+          // 确认 CPU 模式稳定后再考虑按需启用 NPU（caps.canUseNpu）。
+          val mtmdUseGpu = false  // 诊断阶段强制 CPU，排除 NPU 卡死
 
           activeBackend = when {
             forceCpuOnly -> "CPU-4threads (forced)"

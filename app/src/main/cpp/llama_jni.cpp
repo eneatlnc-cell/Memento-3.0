@@ -239,10 +239,11 @@ Java_com_myagent_app_model_LlamaNative_modelLoad(
 
   llama_model_params params = llama_model_default_params();
   params.n_gpu_layers = nGpuLayers;
-  // mmap 开启：Android 12+ (API 31+) 的 mmap 在内部分区上完全稳定，
-  // 且 mmap 让 OS 按需加载页面，避免 OOM（533MB 模型 + 展开权重 ~1.3GB）。
-  // 之前 use_mmap=false 导致完整读入 RAM → OOM → SIGKILL → "闪崩"。
-  params.use_mmap = true;
+  // use_mmap=false：Android 外部存储（getExternalFilesDir）的 mmap 不稳定，
+  // 沙箱限制可能导致页面无法映射 → SIGBUS → 卡死或闪退。
+  // 完整读入 RAM 更稳定，533MB 模型在 6GB+ 内存设备上可承受。
+  // 若 OOM 再考虑回退 mmap + 内部存储路径。
+  params.use_mmap = false;
 
   // ── GGUF 文件魔数校验（防止加载损坏/不兼容的文件） ──
   {
