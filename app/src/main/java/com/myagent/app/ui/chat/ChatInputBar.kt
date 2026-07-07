@@ -1,7 +1,11 @@
 package com.myagent.app.ui.chat
 
+import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,7 +29,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Movie
@@ -33,6 +36,7 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -43,6 +47,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -61,24 +66,23 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.myagent.app.multimodal.KeyFrameStore
+import com.myagent.app.multimodal.VideoFrameExtractor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * 多模态输入栏 — 三段式工作流入口。
  *
- * v3.3 工作流：图形 / 帧 / 合成
- * - 图形：元素替换对话框，产出图片 + 可选关键帧
- * - 帧：基于缓存关键帧或新生成关键帧，逐帧改造
- * - 合成：取当前缓存关键帧，逐帧渲染合成 MP4
+ * v3.4 工作流：帧 / 图形 / 合成
+ *
+ *   帧   ─→ 1s 视频 → 24 帧关键帧 → 保存相册 + 进缓存
+ *   图形 ─→ 元素替换对话框（用户元素+原图元素+关键帧）→ 改造后 SVG 进缓存
+ *   合成 ─→ 取缓存关键帧 → 逐帧渲染 → MediaCodec → MP4
  *
  * 三段式通过 KeyFrameStore 单例传递关键帧状态。
- *
- * 布局：
- *   [附件 chip 列表] [关键帧缓存指示器]
- *   [+] [ 输入框 ] [发送/停止]
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -104,22 +108,18 @@ fun ChatInputBar(
   var pendingKeyFrameCount by remember { mutableStateOf(0) }
   var pendingVideo by remember { mutableStateOf<Uri?>(null) }
 
-  // KeyFrameStore 状态（帧/合成工坊用）
+  // KeyFrameStore 状态
   val cachedKeyFrames by KeyFrameStore.keyFrames.collectAsState()
   val sourceLabel by KeyFrameStore.sourceLabel.collectAsState()
 
-  // 超限提示
   var errorMessage by remember { mutableStateOf<String?>(null) }
 
-  // 浮层
   var showSheet by remember { mutableStateOf(false) }
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-  // 对话框
-  var showImageDialog by remember { mutableStateOf(false) }
   var showFrameDialog by remember { mutableStateOf(false) }
+  var showImageDialog by remember { mutableStateOf(false) }
 
-  /** 等待浮层关闭后启动下一步 */
   fun launchAfterSheetClose(block: () -> Unit) {
     showSheet = false
     keyboardController?.hide()
@@ -130,12 +130,10 @@ fun ChatInputBar(
     }
   }
 
-  /** 发送：根据附件类型分发 */
   fun send() {
     val text = inputText.trim()
     val hasImages = pendingImages.isNotEmpty()
     val hasVideo = pendingVideo != null
-
     if (text.isEmpty() && !hasImages && !hasVideo) return
 
     when {
@@ -161,7 +159,7 @@ fun ChatInputBar(
     keyboardController?.hide()
   }
 
-  // ── 错误提示 ──
+  // 错误提示
   errorMessage?.let { msg ->
     AlertDialog(
       onDismissRequest = { errorMessage = null },
@@ -173,7 +171,7 @@ fun ChatInputBar(
     )
   }
 
-  // ── 加号浮层：图形 / 帧 / 合成 ──
+  // ── 加号浮层：帧 / 图形 / 合成 ──
   if (showSheet) {
     ModalBottomSheet(
       onDismissRequest = { showSheet = false },
@@ -185,19 +183,19 @@ fun ChatInputBar(
           .fillMaxWidth()
           .padding(bottom = 32.dp),
       ) {
-        // 图形：元素替换对话框
-        SheetOption(
-          icon = Icons.Default.Image,
-          label = "图形",
-          description = "元素到元素替换，产出图片与关键帧",
-          onClick = { launchAfterSheetClose { showImageDialog = true } },
-        )
-        // 帧：关键帧改造工坊
+        // 帧：1s 视频 → 24 帧关键帧
         SheetOption(
           icon = Icons.Default.AutoAwesome,
           label = "帧",
-          description = "生成或改造关键帧（当前缓存 ${cachedKeyFrames.size} 帧）",
+          description = "选择 1s 视频 → 提取 24 帧关键帧 → 保存相册 + 进缓存",
           onClick = { launchAfterSheetClose { showFrameDialog = true } },
+        )
+        // 图形：元素替换改造关键帧
+        SheetOption(
+          icon = Icons.Default.Image,
+          label = "图形",
+          description = "元素替换对话框，改造关键帧输出 SVG（当前缓存 ${cachedKeyFrames.size} 帧）",
+          onClick = { launchAfterSheetClose { showImageDialog = true } },
         )
         // 合成：关键帧 → MP4
         SheetOption(
@@ -209,7 +207,7 @@ fun ChatInputBar(
           onClick = {
             launchAfterSheetClose {
               if (cachedKeyFrames.isEmpty()) {
-                errorMessage = "缓存中没有关键帧，请先在「图形」或「帧」中准备关键帧"
+                errorMessage = "缓存中没有关键帧，请先在「帧」中提取关键帧"
               } else {
                 onComposeVideo()
               }
@@ -220,7 +218,15 @@ fun ChatInputBar(
     }
   }
 
-  // ── 图形对话框 ──
+  // ── 帧工坊对话框 ──
+  if (showFrameDialog) {
+    FrameWorkshopDialog(
+      onDismiss = { showFrameDialog = false },
+      onError = { msg -> errorMessage = msg },
+    )
+  }
+
+  // ── 图形工坊对话框 ──
   if (showImageDialog) {
     ImageCompositeDialog(
       onDismiss = { showImageDialog = false },
@@ -233,22 +239,11 @@ fun ChatInputBar(
         pendingHasOriginalElement = originalElement != null
         pendingKeyFrameCount = keyFrames.size
         pendingVideo = null
-
-        // 若有关键帧，同步到 KeyFrameStore 供「帧」「合成」使用
         if (keyFrames.isNotEmpty()) {
           KeyFrameStore.setKeyFrames(keyFrames, "图形工坊")
         }
-
         showImageDialog = false
       },
-      onError = { msg -> errorMessage = msg },
-    )
-  }
-
-  // ── 帧对话框 ──
-  if (showFrameDialog) {
-    FrameWorkshopDialog(
-      onDismiss = { showFrameDialog = false },
       onError = { msg -> errorMessage = msg },
     )
   }
@@ -259,7 +254,6 @@ fun ChatInputBar(
       .fillMaxWidth()
       .padding(horizontal = 8.dp, vertical = 6.dp),
   ) {
-    // 关键帧缓存指示器
     if (cachedKeyFrames.isNotEmpty()) {
       KeyFrameCacheIndicator(
         count = cachedKeyFrames.size,
@@ -270,7 +264,6 @@ fun ChatInputBar(
       Spacer(modifier = Modifier.height(6.dp))
     }
 
-    // 附件 chip 列表
     if (pendingImages.isNotEmpty() || pendingVideo != null) {
       AttachmentChipRow(
         images = pendingImages,
@@ -281,7 +274,6 @@ fun ChatInputBar(
       Spacer(modifier = Modifier.height(6.dp))
     }
 
-    // 输入栏
     Row(
       verticalAlignment = Alignment.CenterVertically,
       modifier = Modifier.fillMaxWidth(),
@@ -312,7 +304,7 @@ fun ChatInputBar(
               "为${parts.joinToString("+")}添加说明（可选）..."
             }
             pendingVideo != null -> "为视频添加说明（可选）..."
-            cachedKeyFrames.isNotEmpty() -> "输入帧改造指令，或选「合成」生成视频..."
+            cachedKeyFrames.isNotEmpty() -> "输入改造指令，或选「图形」/「合成」继续..."
             else -> "和 Memento 说点什么..."
           }
           Text(hint)
@@ -346,7 +338,235 @@ fun ChatInputBar(
 }
 
 // ════════════════════════════════════════════════════════
-// 图形工坊：元素到元素替换和关键帧提交
+// 帧工坊：1s 视频 → 24 帧关键帧 → 保存相册 + 进缓存
+// ════════════════════════════════════════════════════════
+
+/**
+ * 帧工坊 — 三段式工作流的起点。
+ *
+ * 用户选择 1s 视频 → 系统提取 24 帧关键帧 → 保存到相册 + 进入 KeyFrameStore 缓存。
+ * 提取完成后，关键帧可在「图形」中改造，「合成」为 MP4。
+ */
+@Composable
+private fun FrameWorkshopDialog(
+  onDismiss: () -> Unit,
+  onError: (String) -> Unit,
+) {
+  val context = LocalContext.current
+  val scope = rememberCoroutineScope()
+  val cachedFrames by KeyFrameStore.keyFrames.collectAsState()
+  val sourceLabel by KeyFrameStore.sourceLabel.collectAsState()
+
+  var isExtracting by remember { mutableStateOf(false) }
+  var extractProgress by remember { mutableStateOf(0) }
+
+  // 视频选择器
+  val videoPicker = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.GetContent(),
+  ) { uri: Uri? ->
+    if (uri != null) {
+      scope.launch {
+        isExtracting = true
+        extractProgress = 0
+        try {
+          // 校验大小
+          val size = withContext(Dispatchers.IO) { getFileSize(context, uri) }
+          if (size <= 0) {
+            onError("无法获取视频大小，可能已损坏")
+            return@launch
+          }
+          if (size > MAX_VIDEO_SIZE_BYTES) {
+            val sizeMB = size / (1024 * 1024)
+            onError("视频大小 ${sizeMB}MB 超过 50MB 限制，请选择更小的视频")
+            return@launch
+          }
+
+          // 提取 24 帧
+          val frameUris = withContext(Dispatchers.IO) {
+            extractFramesToGallery(context, uri) { progress ->
+              extractProgress = progress
+            }
+          }
+
+          if (frameUris.isEmpty()) {
+            onError("视频帧提取失败，请检查视频格式或时长（需 ≤1s）")
+            return@launch
+          }
+
+          // 进入 KeyFrameStore 缓存
+          KeyFrameStore.setKeyFrames(frameUris, "帧工坊（1s视频）")
+        } catch (e: Exception) {
+          Log.e("FrameWorkshop", "Extract failed: ${e.message}", e)
+          onError("帧提取失败: ${e.message}")
+        } finally {
+          isExtracting = false
+        }
+      }
+    }
+  }
+
+  AlertDialog(
+    onDismissRequest = { if (!isExtracting) onDismiss() },
+    title = { Text("帧工坊：1s 视频 → 24 帧关键帧") },
+    text = {
+      Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+      ) {
+        if (isExtracting) {
+          // 提取进度
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+          ) {
+            CircularProgressIndicator(
+              modifier = Modifier.size(24.dp),
+              strokeWidth = 2.dp,
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+              text = "正在提取关键帧... $extractProgress/24",
+              style = MaterialTheme.typography.bodyMedium,
+            )
+          }
+        } else if (cachedFrames.isNotEmpty()) {
+          // 当前缓存
+          Text(
+            text = "来源：$sourceLabel · ${cachedFrames.size} 帧",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+          LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            items(cachedFrames.size) { idx ->
+              Box(
+                modifier = Modifier
+                  .size(56.dp)
+                  .clip(RoundedCornerShape(6.dp))
+                  .background(MaterialTheme.colorScheme.surfaceVariant),
+              ) {
+                AsyncImage(
+                  model = cachedFrames[idx],
+                  contentDescription = "帧 ${idx + 1}",
+                  modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                  text = "${idx + 1}",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = MaterialTheme.colorScheme.onSurface,
+                  modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
+                    .padding(horizontal = 4.dp, vertical = 1.dp),
+                )
+              }
+            }
+          }
+
+          Text(
+            text = "关键帧已提取并保存到相册。可点「选择新视频」重新提取，" +
+              "或关闭后进入「图形」改造，「合成」为 MP4。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 11.sp,
+          )
+        } else {
+          // 空状态
+          Text(
+            text = "点击下方按钮，选择一个 1s 视频。系统将提取 24 帧关键帧，" +
+              "保存到相册并进入缓存。\n\n" +
+              "要求：视频 ≤ 1 秒，大小 ≤ 50MB。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 12.sp,
+          )
+        }
+      }
+    },
+    confirmButton = {
+      if (!isExtracting) {
+        TextButton(onClick = { videoPicker.launch("video/*") }) {
+          Text(if (cachedFrames.isEmpty()) "选择 1s 视频" else "选择新视频")
+        }
+      }
+    },
+    dismissButton = {
+      if (!isExtracting) {
+        TextButton(onClick = onDismiss) { Text("完成") }
+      }
+    },
+  )
+}
+
+/**
+ * 从视频提取 24 帧关键帧，保存到相册，返回 Uri 列表。
+ */
+private suspend fun extractFramesToGallery(
+  context: Context,
+  videoUri: Uri,
+  onProgress: (Int) -> Unit,
+): List<Uri> = withContext(Dispatchers.IO) {
+  // 使用 VideoFrameExtractor 提取帧到缓存目录
+  val cacheDir = File(context.cacheDir, "extracted_frames").apply { mkdirs() }
+  val framePaths = VideoFrameExtractor.extractFrames(context, videoUri, cacheDir)
+
+  if (framePaths.isEmpty()) return@withContext emptyList()
+
+  val result = mutableListOf<Uri>()
+  var index = 0
+  for (path in framePaths) {
+    val file = File(path)
+    if (!file.exists()) continue
+
+    // 保存到相册
+    val savedUri = saveBitmapToGallery(context, file, "memento_frame_${System.currentTimeMillis()}_$index.jpg")
+    if (savedUri != null) {
+      result.add(savedUri)
+    }
+    index++
+    onProgress(result.size)
+  }
+  result
+}
+
+/**
+ * 保存图片文件到相册（MediaStore），返回 Uri。
+ */
+private fun saveBitmapToGallery(context: Context, file: File, displayName: String): Uri? {
+  return try {
+    val contentValues = ContentValues().apply {
+      put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+      put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Memento")
+        put(MediaStore.MediaColumns.IS_PENDING, 1)
+      }
+    }
+    val uri = context.contentResolver.insert(
+      MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues
+    ) ?: return null
+
+    context.contentResolver.openOutputStream(uri)?.use { out ->
+      file.inputStream().use { it.copyTo(out) }
+    }
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      contentValues.clear()
+      contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+      context.contentResolver.update(uri, contentValues, null, null)
+    }
+    uri
+  } catch (e: Exception) {
+    Log.w("FrameWorkshop", "saveBitmapToGallery failed: ${e.message}")
+    null
+  }
+}
+
+// ════════════════════════════════════════════════════════
+// 图形工坊：元素替换改造关键帧
 // ════════════════════════════════════════════════════════
 
 /**
@@ -355,6 +575,9 @@ fun ChatInputBar(
  * 布局：（+ + - +）
  * - 左侧两个入口：用户元素（1张）+ 原图元素（1张）
  * - 右侧入口：关键帧（4-12张）
+ *
+ * 提交后：
+ * - 用户元素 + 原图元素 → 模型执行替换 → 输出改造后的关键帧 SVG → 进缓存
  */
 @Composable
 private fun ImageCompositeDialog(
@@ -368,6 +591,14 @@ private fun ImageCompositeDialog(
   var userElement by remember { mutableStateOf<Uri?>(null) }
   var originalElement by remember { mutableStateOf<Uri?>(null) }
   val keyFrames = remember { mutableStateListOf<Uri>() }
+
+  // 预填：若 KeyFrameStore 有关键帧，自动填入
+  val cachedFrames by KeyFrameStore.keyFrames.collectAsState()
+  LaunchedEffect(Unit) {
+    if (keyFrames.isEmpty() && cachedFrames.isNotEmpty()) {
+      keyFrames.addAll(cachedFrames)
+    }
+  }
 
   val userElementPicker = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.GetContent(),
@@ -392,7 +623,7 @@ private fun ImageCompositeDialog(
 
   AlertDialog(
     onDismissRequest = onDismiss,
-    title = { Text("图形工坊：元素替换与关键帧") },
+    title = { Text("图形工坊：元素替换改造关键帧") },
     text = {
       Column(
         modifier = Modifier.fillMaxWidth(),
@@ -439,7 +670,7 @@ private fun ImageCompositeDialog(
 
         if (keyFrames.isNotEmpty()) {
           Text(
-            text = "已选关键帧 ${keyFrames.size} 张",
+            text = "已选关键帧 ${keyFrames.size} 张（来自帧工坊缓存或手动选择）",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
@@ -480,8 +711,8 @@ private fun ImageCompositeDialog(
         }
 
         Text(
-          text = "选择你的元素和原图中要替换的元素，以及 4-12 张关键帧。" +
-            "提交后关键帧会进入缓存，可在「帧」中改造，「合成」为 MP4。",
+          text = "选择用户元素和原图元素，系统将替换关键帧中的对应元素，" +
+            "输出改造后的 SVG 关键帧进入缓存，供「合成」生成 MP4。",
           style = MaterialTheme.typography.bodySmall,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
           fontSize = 12.sp,
@@ -501,146 +732,6 @@ private fun ImageCompositeDialog(
       ) { Text("提交") }
     },
     dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-  )
-}
-
-// ════════════════════════════════════════════════════════
-// 帧工坊：关键帧改造
-// ════════════════════════════════════════════════════════
-
-/**
- * 帧工坊对话框 — 查看/改造缓存中的关键帧。
- *
- * 用户可：
- * - 查看当前缓存的所有关键帧
- * - 删除单帧
- * - 清空全部
- * - 通过输入框发送改造指令（如「把第3帧的背景换成夜晚」）
- *
- * 关键帧来源：
- * - 图形工坊提交的
- * - 帧工坊中新生成的（通过指令让模型生成）
- * - 视频提取的（自动进入缓存）
- */
-@Composable
-private fun FrameWorkshopDialog(
-  onDismiss: () -> Unit,
-  onError: (String) -> Unit,
-) {
-  val cachedFrames by KeyFrameStore.keyFrames.collectAsState()
-  val sourceLabel by KeyFrameStore.sourceLabel.collectAsState()
-
-  AlertDialog(
-    onDismissRequest = onDismiss,
-    title = { Text("帧工坊：关键帧改造") },
-    text = {
-      Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-      ) {
-        if (cachedFrames.isEmpty()) {
-          // 空状态
-          Box(
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(vertical = 16.dp),
-            contentAlignment = Alignment.Center,
-          ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-              Icon(
-                imageVector = Icons.Default.BrokenImage,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(40.dp),
-              )
-              Spacer(modifier = Modifier.height(8.dp))
-              Text(
-                text = "缓存中没有关键帧",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-              )
-              Text(
-                text = "请先在「图形」中提交关键帧，\n或在下方输入指令生成关键帧",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 12.sp,
-              )
-            }
-          }
-        } else {
-          Text(
-            text = "来源：$sourceLabel · ${cachedFrames.size} 帧",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-          )
-
-          // 关键帧网格预览
-          LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.fillMaxWidth(),
-          ) {
-            items(cachedFrames.size) { idx ->
-              Box(
-                modifier = Modifier
-                  .size(64.dp)
-                  .clip(RoundedCornerShape(6.dp))
-                  .background(MaterialTheme.colorScheme.surfaceVariant),
-              ) {
-                AsyncImage(
-                  model = cachedFrames[idx],
-                  contentDescription = "帧 ${idx + 1}",
-                  modifier = Modifier.fillMaxWidth(),
-                )
-                // 帧号
-                Text(
-                  text = "${idx + 1}",
-                  style = MaterialTheme.typography.labelSmall,
-                  color = MaterialTheme.colorScheme.onSurface,
-                  modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
-                    .padding(horizontal = 4.dp, vertical = 1.dp),
-                )
-                // 删除按钮
-                IconButton(
-                  onClick = { KeyFrameStore.removeFrame(idx) },
-                  modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .size(18.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.error),
-                ) {
-                  Icon(
-                    imageVector = Icons.Default.Close,
-                    contentDescription = "删除帧",
-                    tint = MaterialTheme.colorScheme.onError,
-                    modifier = Modifier.size(10.dp),
-                  )
-                }
-              }
-            }
-          }
-
-          Text(
-            text = "提示：关闭对话框后，在输入框输入改造指令并发送，" +
-              "如「把第 3 帧背景换成夜晚」「角色位置左移」",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 11.sp,
-          )
-        }
-      }
-    },
-    confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } },
-    dismissButton = {
-      TextButton(
-        onClick = {
-          KeyFrameStore.clear()
-          onDismiss()
-        },
-        enabled = cachedFrames.isNotEmpty(),
-      ) { Text("清空缓存") }
-    },
   )
 }
 
